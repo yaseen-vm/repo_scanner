@@ -1,0 +1,47 @@
+name: Test Repo Scanner
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Repo Scanner
+        uses: ./  # Uses the action from this repo
+        id: scanner
+        with:
+          llm_api_key: ${{ secrets.MIMO_API_KEY || secrets.LLM_API_KEY }}
+          llm_base_url: ${{ secrets.LLM_BASE_URL || 'https://api.xiaomimimo.com/v1' }}
+          llm_model: ${{ secrets.LLM_MODEL || 'mimo-v2.5-pro' }}
+          severity_threshold: medium
+          max_files: 50
+          create_issues: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          post_comment: ${{ github.event_name == 'pull_request' }}
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repo-scanner-report
+          path: |
+            /tmp/repo-scanner-report.md
+            /tmp/repo-scanner-report.json
+
+      - name: Fail on Critical Issues
+        if: steps.scanner.outputs.total_issues > 0
+        run: |
+          echo "Found ${{ steps.scanner.outputs.total_issues }} issue(s)"
+          # Uncomment to fail the build on any issues:
+          # exit 1

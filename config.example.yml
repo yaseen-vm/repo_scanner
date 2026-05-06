@@ -1,0 +1,28 @@
+# Repo Scanner Configuration
+# Copy this file to repo-scanner.yml and customize
+
+# LLM settings (Xiaomi MiMo)
+model: mimo-v2.5-pro
+base_url: https://api.xiaomimimo.com/v1
+
+# Analysis settings
+severity_threshold: medium
+max_files: 50
+max_file_size: 100000
+
+# Patterns to ignore
+ignore_patterns:
+  - "**/node_modules/**"
+  - "**/.git/**"
+  - "**/__pycache__/**"
+  - "**/venv/**"
+  - "**/test/**"
+  - "**/tests/**"
+  - "**/vendor/**"
+  - "**/*.test.js"
+  - "**/*.test.ts"
+  - "**/*.spec.js"
+  - "**/*.spec.ts"
+  - "*.lock"
+  - "*.min.js"
+  - "*.min.css"

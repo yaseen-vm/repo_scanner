@@ -1,0 +1,86 @@
+name: "Repo Scanner"
+description: "AI-powered code analysis that finds bugs, security issues, and code quality problems"
+author: "repo-scanner"
+
+inputs:
+  mimo_api_key:
+    description: "MiMo API key from platform.xiaomimimo.com"
+    required: false
+  llm_api_key:
+    description: "API key for the LLM provider (fallback if mimo_api_key not set)"
+    required: false
+  llm_base_url:
+    description: "Base URL for the LLM API"
+    required: false
+    default: "https://api.xiaomimimo.com/v1"
+  llm_model:
+    description: "Model name to use for analysis"
+    required: false
+    default: "mimo-v2.5-pro"
+  severity_threshold:
+    description: "Minimum severity to report (low/medium/high/critical)"
+    required: false
+    default: "medium"
+  max_files:
+    description: "Maximum number of files to analyze per run"
+    required: false
+    default: "50"
+  create_issues:
+    description: "Create GitHub issues for findings (true/false)"
+    required: false
+    default: "false"
+  post_comment:
+    description: "Post PR comment with summary (true/false)"
+    required: false
+    default: "true"
+  full_scan:
+    description: "Scan all files instead of just changed ones (true/false)"
+    required: false
+    default: "false"
+  ignore_patterns:
+    description: "Comma-separated glob patterns to ignore"
+    required: false
+    default: ""
+  config_file:
+    description: "Path to config YAML file"
+    required: false
+    default: ""
+
+outputs:
+  report_path:
+    description: "Path to the generated markdown report"
+  total_issues:
+    description: "Total number of issues found"
+  json_report_path:
+    description: "Path to the JSON report"
+
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  args:
+    - "--mimo-api-key"
+    - ${{ inputs.mimo_api_key }}
+    - "--api-key"
+    - ${{ inputs.llm_api_key }}
+    - "--base-url"
+    - ${{ inputs.llm_base_url }}
+    - "--model"
+    - ${{ inputs.llm_model }}
+    - "--severity"
+    - ${{ inputs.severity_threshold }}
+    - "--max-files"
+    - ${{ inputs.max_files }}
+    - "--create-issues"
+    - ${{ inputs.create_issues }}
+    - "--post-comment"
+    - ${{ inputs.post_comment }}
+    - "--full-scan"
+    - ${{ inputs.full_scan }}
+    - "--ignore-patterns"
+    - ${{ inputs.ignore_patterns }}
+    - "--config"
+    - ${{ inputs.config_file }}
+
+branding:
+  icon: "search"
+  color: "blue"
