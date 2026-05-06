@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "repo-scanner"
+version = "0.1.0"
+description = "AI-powered repository scanner for GitHub workflows"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0.0",
+    "PyGithub>=2.1.0",
+    "pyyaml>=6.0",
+    "click>=8.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+repo-scanner = "repo_scanner.main:main"

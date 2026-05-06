@@ -65,9 +65,18 @@ runs:
       with:
         python-version: "3.11"
 
+    - name: Checkout repo scanner
+      uses: actions/checkout@v4
+      with:
+        repository: yaseen-vm/repo_scanner
+        path: _repo_scanner
+        ref: master
+
     - name: Install dependencies
       shell: bash
-      run: pip install openai PyGithub pyyaml click rich
+      run: |
+        pip install openai PyGithub pyyaml click rich
+        pip install -e _repo_scanner/
 
     - name: Run Repo Scanner
       id: run-scanner
