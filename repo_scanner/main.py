@@ -7,7 +7,12 @@ from rich.table import Table
 
 from .analyzer import analyze_files, filter_by_threshold
 from .config import Config
-from .github_client import create_issue, get_pr_number_from_event, post_pr_comment
+from .github_client import (
+    create_issue,
+    ensure_labels,
+    get_pr_number_from_event,
+    post_pr_comment,
+)
 from .reporter import (
     build_pr_summary,
     generate_json_report,
@@ -145,6 +150,13 @@ def main(config, output, output_json, create_issues, post_comment, full_scan, se
 
     created_urls = []
     if create_issues and cfg.github_token:
+        console.print("  Ensuring labels exist...")
+        try:
+            ensure_labels(cfg)
+            console.print("    Labels ready")
+        except Exception as e:
+            console.print(f"    [yellow]Warning: Could not ensure labels: {e}[/yellow]")
+
         console.print("  Creating GitHub issues...")
         for issue in issues:
             try:
