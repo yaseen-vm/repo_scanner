@@ -49,37 +49,83 @@ inputs:
 outputs:
   report_path:
     description: "Path to the generated markdown report"
+    value: ${{ steps.run-scanner.outputs.report_path }}
   total_issues:
     description: "Total number of issues found"
+    value: ${{ steps.run-scanner.outputs.total_issues }}
   json_report_path:
     description: "Path to the JSON report"
+    value: ${{ steps.run-scanner.outputs.json_report_path }}
 
 runs:
-  using: "docker"
-  image: "Dockerfile"
-  args:
-    - "--mimo-api-key"
-    - ${{ inputs.mimo_api_key }}
-    - "--api-key"
-    - ${{ inputs.llm_api_key }}
-    - "--base-url"
-    - ${{ inputs.llm_base_url }}
-    - "--model"
-    - ${{ inputs.llm_model }}
-    - "--severity"
-    - ${{ inputs.severity_threshold }}
-    - "--max-files"
-    - ${{ inputs.max_files }}
-    - "--create-issues"
-    - ${{ inputs.create_issues }}
-    - "--post-comment"
-    - ${{ inputs.post_comment }}
-    - "--full-scan"
-    - ${{ inputs.full_scan }}
-    - "--ignore-patterns"
-    - ${{ inputs.ignore_patterns }}
-    - "--config"
-    - ${{ inputs.config_file }}
+  using: "composite"
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      shell: bash
+      run: pip install openai PyGithub pyyaml click rich
+
+    - name: Run Repo Scanner
+      id: run-scanner
+      shell: bash
+      env:
+        LLM_API_KEY: ${{ inputs.mimo_api_key || inputs.llm_api_key }}
+        MIMO_API_KEY: ${{ inputs.mimo_api_key || inputs.llm_api_key }}
+        LLM_BASE_URL: ${{ inputs.llm_base_url }}
+        LLM_MODEL: ${{ inputs.llm_model }}
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        GITHUB_EVENT_PATH: ${{ github.event_path }}
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_REF: ${{ github.ref }}
+        GITHUB_WORKSPACE: ${{ github.workspace }}
+        SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
+        MAX_FILES: ${{ inputs.max_files }}
+        IGNORE_PATTERNS: ${{ inputs.ignore_patterns }}
+      run: |
+        CMD_ARGS=()
+
+        if [ "${{ inputs.severity_threshold }}" != "" ]; then
+          CMD_ARGS+=("--severity" "${{ inputs.severity_threshold }}")
+        fi
+
+        if [ "${{ inputs.create_issues }}" = "true" ]; then
+          CMD_ARGS+=("--create-issues")
+        else
+          CMD_ARGS+=("--no-create-issues")
+        fi
+
+        if [ "${{ inputs.post_comment }}" = "true" ]; then
+          CMD_ARGS+=("--post-comment")
+        else
+          CMD_ARGS+=("--no-post-comment")
+        fi
+
+        if [ "${{ inputs.full_scan }}" = "true" ]; then
+          CMD_ARGS+=("--full-scan")
+        else
+          CMD_ARGS+=("--diff-only")
+        fi
+
+        if [ "${{ inputs.config_file }}" != "" ]; then
+          CMD_ARGS+=("--config" "${{ inputs.config_file }}")
+        fi
+
+        CMD_ARGS+=("--output" "/tmp/repo-scanner-report.md")
+        CMD_ARGS+=("--output-json" "/tmp/repo-scanner-report.json")
+
+        python -m repo_scanner.main "${CMD_ARGS[@]}"
+
+        echo "report_path=/tmp/repo-scanner-report.md" >> "$GITHUB_OUTPUT"
+        echo "json_report_path=/tmp/repo-scanner-report.json" >> "$GITHUB_OUTPUT"
+
+        ISSUES_COUNT=$(python -c "import json; data=json.load(open('/tmp/repo-scanner-report.json')); print(data.get('total_issues', 0))" 2>/dev/null || echo "0")
+        echo "total_issues=$ISSUES_COUNT" >> "$GITHUB_OUTPUT"
 
 branding:
   icon: "search"
