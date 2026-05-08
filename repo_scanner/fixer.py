@@ -8,6 +8,21 @@ from openai import OpenAI
 from .config import Config
 from .github_client import create_pull_request, get_scanner_issues
 
+_TEXT_BYTES = bytearray(
+    {7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7F}
+)
+
+
+def _is_binary(path: Path) -> bool:
+    try:
+        chunk = path.read_bytes()[:8192]
+    except OSError:
+        return False
+    if b"\x00" in chunk:
+        return True
+    non_text = sum(1 for b in chunk if b not in _TEXT_BYTES)
+    return non_text / max(len(chunk), 1) > 0.30
+
 FIX_SYSTEM_PROMPT = """You are a code fixer. Given a file and a bug/issue description, return the COMPLETE fixed file.
 
 Rules:
@@ -215,8 +230,19 @@ def run_fixes(
             )
             continue
 
+        if _is_binary(file_path):
+            results.append(
+                FixResult(
+                    issue_number=issue["number"],
+                    issue_title=issue["title"],
+                    success=False,
+                    error="File is binary or corrupted — cannot auto-fix. Delete the file manually or restore from git history.",
+                )
+            )
+            continue
+
         try:
-            file_content = file_path.read_text(encoding="utf-8", errors="ignore")
+            file_content = file_path.read_text(encoding="utf-8")
             fix_content = generate_fix(config, file_content, issue)
             if not fix_content or fix_content == file_content:
                 results.append(
