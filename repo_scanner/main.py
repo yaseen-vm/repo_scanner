@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from .fixer import FixResult, run_fixes
 from .github_client import (
     create_issue,
     ensure_labels,
+    get_existing_issue_titles,
     get_pr_number_from_event,
     post_pr_comment,
 )
@@ -179,12 +181,22 @@ def scan(
         except Exception as e:
             console.print(f"    [yellow]Warning: Could not ensure labels: {e}[/yellow]")
 
+        existing_titles: set[str] = set()
+        try:
+            existing_titles = get_existing_issue_titles(cfg)
+            console.print(f"  Found {len(existing_titles)} existing open issue(s), skipping duplicates")
+        except Exception as e:
+            console.print(f"    [yellow]Warning: Could not fetch existing issues: {e}[/yellow]")
+
         console.print("  Creating GitHub issues...")
         for issue in issues:
             try:
-                url = create_issue(cfg, issue, cfg.sha)
-                created_urls.append(url)
-                console.print(f"    Created: {url}")
+                url = create_issue(cfg, issue, cfg.sha, existing_titles)
+                if url is None:
+                    console.print(f"    Skipped (duplicate): [{issue.severity.upper()}] {issue.title}")
+                else:
+                    created_urls.append(url)
+                    console.print(f"    Created: {url}")
             except Exception as e:
                 console.print(f"    [red]Failed to create issue: {e}[/red]")
 
@@ -225,8 +237,20 @@ def scan(
     default=None,
     help="Only fix issues at or above this severity (low/medium/high/critical)",
 )
+@click.option(
+    "--issue-number",
+    default=None,
+    type=int,
+    help="Fix a specific issue by number instead of fetching all open issues",
+)
+@click.option(
+    "--min-age-days",
+    default=0,
+    type=int,
+    help="Only fix issues older than this many days (0 = no limit)",
+)
 @click.pass_context
-def fix(ctx, config, max_fixes, severity):
+def fix(ctx, config, max_fixes, severity, issue_number, min_age_days):
     """Auto-fix scanner issues and create PRs."""
     cfg = Config.from_env_and_file(config)
 
@@ -239,15 +263,23 @@ def fix(ctx, config, max_fixes, severity):
         )
         sys.exit(1)
 
-    effective_max = max_fixes if max_fixes is not None else cfg.max_fixes
+    effective_max = 1 if issue_number is not None else (max_fixes if max_fixes is not None else cfg.max_fixes)
     workspace = cfg.workspace or str(Path.cwd())
 
     console.print(f"[bold]Repo Scanner Fix[/bold] — Fixing issues in {cfg.repo}")
     console.print(f"  Model: {cfg.model} | Max fixes: {effective_max}")
+    if issue_number:
+        console.print(f"  Targeting issue: #{issue_number}")
     if severity:
         console.print(f"  Severity filter: {severity} and above")
+    if min_age_days > 0:
+        console.print(f"  Age gate: only issues older than {min_age_days} day(s)")
 
-    results: list[FixResult] = run_fixes(cfg, effective_max, severity, workspace)
+    results: list[FixResult] = run_fixes(
+        cfg, effective_max, severity, workspace,
+        issue_number=issue_number,
+        min_age_days=min_age_days,
+    )
 
     if not results:
         console.print("[yellow]No open scanner issues found to fix.[/yellow]")
@@ -279,6 +311,13 @@ def fix(ctx, config, max_fixes, severity):
 
     successes = sum(1 for r in results if r.success)
     console.print(f"\n  {successes}/{len(results)} fixes created successfully")
+
+    github_output = os.environ.get("GITHUB_OUTPUT", "")
+    if github_output:
+        pr_urls = ",".join(r.pr_url for r in results if r.success)
+        with open(github_output, "a") as f:
+            f.write(f"fixes_created={successes}\n")
+            f.write(f"pr_urls={pr_urls}\n")
 
 
 def main():

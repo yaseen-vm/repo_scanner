@@ -1,13 +1,14 @@
-name: Test Repo Scanner
+name: Scan
 
 on:
   pull_request:
     branches: [master]
   push:
     branches: [master]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   issues: write
   pull-requests: write
 
@@ -17,6 +18,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Run Repo Scanner
         uses: ./
@@ -39,34 +42,9 @@ jobs:
             /tmp/repo-scanner-report.md
             /tmp/repo-scanner-report.json
 
-      - name: Fail on Critical Issues
-        if: steps.scanner.outputs.total_issues > 0
+      - name: Report issue count
+        if: always()
         run: |
           echo "Found ${{ steps.scanner.outputs.total_issues }} issue(s)"
           # Uncomment to fail the build on any issues:
           # exit 1
-
-  fix:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: scan
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Configure Git
-        run: |
-          git config user.name "repo-scanner[bot]"
-          git config user.email "repo-scanner[bot]@users.noreply.github.com"
-
-      - name: Run Repo Scanner Fix
-        uses: ./
-        with:
-          llm_api_key: ${{ secrets.MIMO_API_KEY || secrets.LLM_API_KEY }}
-          llm_base_url: ${{ secrets.LLM_BASE_URL || 'https://api.xiaomimimo.com/v1' }}
-          llm_model: ${{ secrets.LLM_MODEL || 'mimo-v2.5-pro' }}
-          mode: fix
-          max_fixes: "3"
-          severity_threshold: high

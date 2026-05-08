@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from github import Github
 from github.GithubException import UnknownObjectException
 
@@ -14,6 +16,8 @@ LABEL_DEFS = {
     "quality": {"color": "8b5cf6", "description": "Code quality issue"},
     "performance": {"color": "f59e0b", "description": "Performance issue"},
     "repo-scanner": {"color": "1d76db", "description": "Detected by repo scanner"},
+    "auto-fix-approved": {"color": "0075ca", "description": "Approved for auto-fix by repo scanner"},
+    "fix-in-progress": {"color": "e4e669", "description": "Auto-fix PR has been created"},
 }
 
 
@@ -36,7 +40,23 @@ def ensure_labels(config: Config) -> None:
         )
 
 
-def create_issue(config: Config, issue: Issue, commit_sha: str = "") -> str:
+def get_existing_issue_titles(config: Config) -> set[str]:
+    g = get_github_client(config)
+    repo = g.get_repo(config.repo)
+    return {i.title for i in repo.get_issues(labels=["repo-scanner"], state="open")}
+
+
+def create_issue(
+    config: Config,
+    issue: Issue,
+    commit_sha: str = "",
+    existing_titles: set[str] | None = None,
+) -> str | None:
+    title = f"[{issue.severity.upper()}] {issue.title}"
+
+    if existing_titles is not None and title in existing_titles:
+        return None
+
     g = get_github_client(config)
     repo = g.get_repo(config.repo)
 
@@ -56,7 +76,6 @@ def create_issue(config: Config, issue: Issue, commit_sha: str = "") -> str:
     if commit_sha:
         body_parts.append(f"\n---\nDetected in commit `{commit_sha[:8]}`")
 
-    title = f"[{issue.severity.upper()}] {issue.title}"
     created = repo.create_issue(title=title, body="\n".join(body_parts), labels=labels)
     return created.html_url
 
@@ -69,59 +88,80 @@ def post_pr_comment(config: Config, pr_number: int, body: str) -> str:
     return comment.html_url
 
 
+_SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
+def _parse_raw_issue(issue) -> dict:
+    label_names = [l.name for l in issue.labels]
+    severity = "medium"
+    file_path = ""
+    line = 0
+
+    for lbl in label_names:
+        if lbl in _SEVERITY_RANK:
+            severity = lbl
+            break
+
+    for line_text in (issue.body or "").split("\n"):
+        if line_text.startswith("**File:**"):
+            ref = line_text.split("`")[1] if "`" in line_text else ""
+            if ":" in ref:
+                file_path, _, line_str = ref.rpartition(":")
+                try:
+                    line = int(line_str)
+                except ValueError:
+                    line = 0
+            else:
+                file_path = ref
+            break
+
+    return {
+        "number": issue.number,
+        "title": issue.title,
+        "body": issue.body or "",
+        "labels": label_names,
+        "severity": severity,
+        "file": file_path,
+        "line": line,
+        "html_url": issue.html_url,
+        "created_at": issue.created_at,
+    }
+
+
 def get_scanner_issues(
-    config: Config, severity_filter: str | None = None
+    config: Config,
+    severity_filter: str | None = None,
+    min_age_days: int = 0,
+    issue_number: int | None = None,
 ) -> list[dict]:
     g = get_github_client(config)
     repo = g.get_repo(config.repo)
 
-    severity_rank = {"low": 1, "medium": 2, "high": 3, "critical": 4}
-    min_rank = severity_rank.get(severity_filter, 0) if severity_filter else 0
+    if issue_number is not None:
+        raw = repo.get_issue(issue_number)
+        parsed = _parse_raw_issue(raw)
+        return [parsed]
 
-    issues = repo.get_issues(labels=["repo-scanner"], state="open")
+    min_rank = _SEVERITY_RANK.get(severity_filter, 0) if severity_filter else 0
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=min_age_days)
+        if min_age_days > 0
+        else None
+    )
+
     parsed = []
+    for issue in repo.get_issues(labels=["repo-scanner"], state="open"):
+        entry = _parse_raw_issue(issue)
 
-    for issue in issues:
-        label_names = [l.name for l in issue.labels]
-        severity = "medium"
-        file_path = ""
-        line = 0
-
-        for lbl in label_names:
-            if lbl in severity_rank:
-                severity = lbl
-                break
-
-        if severity_rank.get(severity, 0) < min_rank:
+        if _SEVERITY_RANK.get(entry["severity"], 0) < min_rank:
             continue
 
-        for line_text in (issue.body or "").split("\n"):
-            if line_text.startswith("**File:**"):
-                ref = line_text.split("`")[1] if "`" in line_text else ""
-                if ":" in ref:
-                    file_path, _, line_str = ref.rpartition(":")
-                    try:
-                        line = int(line_str)
-                    except ValueError:
-                        line = 0
-                else:
-                    file_path = ref
-                break
+        if cutoff and entry["created_at"] > cutoff:
+            continue
 
-        parsed.append(
-            {
-                "number": issue.number,
-                "title": issue.title,
-                "body": issue.body or "",
-                "labels": label_names,
-                "severity": severity,
-                "file": file_path,
-                "line": line,
-                "html_url": issue.html_url,
-            }
-        )
+        parsed.append(entry)
 
-    parsed.sort(key=lambda x: severity_rank.get(x["severity"], 0), reverse=True)
+    parsed.sort(key=lambda x: _SEVERITY_RANK.get(x["severity"], 0), reverse=True)
     return parsed
 
 

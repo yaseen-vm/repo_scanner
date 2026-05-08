@@ -1,0 +1,93 @@
+name: Fix Issue on Approval Label
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  fix-on-label:
+    # Fires when 'auto-fix-approved' is added to any open repo-scanner issue
+    if: |
+      github.event.label.name == 'auto-fix-approved' &&
+      github.event.issue.state == 'open' &&
+      contains(toJson(github.event.issue.labels), 'repo-scanner')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Mark as fix-in-progress
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue.number;
+            // Swap label: remove auto-fix-approved, add fix-in-progress
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              name: 'auto-fix-approved'
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              labels: ['fix-in-progress']
+            });
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "repo-scanner[bot]"
+          git config user.email "repo-scanner[bot]@users.noreply.github.com"
+
+      - name: Fix issue #${{ github.event.issue.number }}
+        uses: ./
+        id: fix
+        with:
+          llm_api_key: ${{ secrets.MIMO_API_KEY || secrets.LLM_API_KEY }}
+          llm_base_url: ${{ secrets.LLM_BASE_URL || 'https://api.xiaomimimo.com/v1' }}
+          llm_model: ${{ secrets.LLM_MODEL || 'mimo-v2.5-pro' }}
+          mode: fix
+          max_fixes: "1"
+          issue_number: ${{ github.event.issue.number }}
+
+      - name: Post result and update label
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const issue = context.payload.issue.number;
+            const prUrls = '${{ steps.fix.outputs.pr_urls }}';
+
+            if (prUrls) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue,
+                body: `🤖 Fix PR created: ${prUrls}\n\nReview and merge to close this issue.`
+              });
+            } else {
+              // Fix failed — remove fix-in-progress so it can be retried
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue,
+                  name: 'fix-in-progress'
+                });
+              } catch (_) {}
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue,
+                body: `⚠️ Could not generate a fix. [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.\n\nRe-add \`auto-fix-approved\` to retry.`
+              });
+            }

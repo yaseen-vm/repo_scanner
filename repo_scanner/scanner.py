@@ -1,5 +1,6 @@
 import fnmatch
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,6 +99,39 @@ def should_ignore(path: str, ignore_patterns: list[str]) -> bool:
     return False
 
 
+def _get_files_from_git_diff(base_sha: str, head_sha: str, workspace: str) -> list[FileChange]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only", base_sha, head_sha],
+        capture_output=True,
+        text=True,
+        cwd=workspace,
+    )
+    if result.returncode != 0:
+        return []
+
+    files: list[FileChange] = []
+    for file_path in result.stdout.strip().splitlines():
+        if not file_path:
+            continue
+        full_path = Path(workspace) / file_path
+        if full_path.exists() and full_path.is_file():
+            try:
+                content = full_path.read_text(encoding="utf-8", errors="ignore")
+                files.append(
+                    FileChange(
+                        path=file_path,
+                        content=content,
+                        diff="",
+                        language=detect_language(file_path),
+                        additions=0,
+                        deletions=0,
+                    )
+                )
+            except Exception:
+                continue
+    return files
+
+
 def get_changed_files_from_event(event_path: str, workspace: str) -> list[FileChange]:
     if not event_path or not Path(event_path).exists():
         return []
@@ -105,21 +139,23 @@ def get_changed_files_from_event(event_path: str, workspace: str) -> list[FileCh
     with open(event_path) as f:
         event = json.load(f)
 
-    files: list[FileChange] = []
-
     pull_request = event.get("pull_request", {})
     if pull_request:
-        return files
+        base_sha = pull_request.get("base", {}).get("sha", "")
+        head_sha = pull_request.get("head", {}).get("sha", "")
+        if base_sha and head_sha:
+            return _get_files_from_git_diff(base_sha, head_sha, workspace)
+        return []
 
     head_commit = event.get("head_commit", {})
     if not head_commit:
-        return files
+        return []
 
     added = head_commit.get("added", [])
     modified = head_commit.get("modified", [])
-    all_files = added + modified
 
-    for file_path in all_files:
+    files: list[FileChange] = []
+    for file_path in added + modified:
         full_path = Path(workspace) / file_path
         if full_path.exists() and full_path.is_file():
             try:

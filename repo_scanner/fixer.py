@@ -189,8 +189,15 @@ def run_fixes(
     max_fixes: int,
     severity_filter: str | None,
     workspace: str,
+    issue_number: int | None = None,
+    min_age_days: int = 0,
 ) -> list[FixResult]:
-    issues = get_scanner_issues(config, severity_filter=severity_filter)
+    issues = get_scanner_issues(
+        config,
+        severity_filter=severity_filter,
+        min_age_days=min_age_days,
+        issue_number=issue_number,
+    )
     if not issues:
         return []
 
