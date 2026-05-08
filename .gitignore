@@ -9,3 +9,4 @@ build/
 .env
 *.md
 !README.md
+!AGENTS.md

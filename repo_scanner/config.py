@@ -29,6 +29,7 @@ class Config:
     )
     max_files: int = 50
     max_file_size: int = 100_000
+    max_fixes: int = 3
     event_name: str = ""
     event_path: str = ""
     sha: str = ""

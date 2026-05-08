@@ -7,6 +7,7 @@ from rich.table import Table
 
 from .analyzer import analyze_files, filter_by_threshold
 from .config import Config
+from .fixer import FixResult, run_fixes
 from .github_client import (
     create_issue,
     ensure_labels,
@@ -61,7 +62,34 @@ def print_results(issues, created_urls=None):
             console.print(f"  {url}")
 
 
-@click.command()
+def _require_api_key(cfg: Config):
+    if not cfg.api_key:
+        console.print(
+            "[red]Error: No API key set. Use LLM_API_KEY or MIMO_API_KEY env var.[/red]"
+        )
+        sys.exit(1)
+
+
+def _require_repo(cfg: Config):
+    if not cfg.repo:
+        console.print(
+            "[red]Error: No repo set. Use GITHUB_REPOSITORY env var or --repo in config.[/red]"
+        )
+        sys.exit(1)
+
+
+@click.group(invoke_without_command=True)
+@click.pass_context
+@click.option("--config", "-c", default=None, help="Path to config YAML file")
+def cli(ctx, config):
+    """AI-powered repository scanner for GitHub workflows."""
+    ctx.ensure_object(dict)
+    ctx.obj["config_path"] = config
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(scan, config=config)
+
+
+@cli.command()
 @click.option("--config", "-c", default=None, help="Path to config YAML file")
 @click.option(
     "--output", "-o", default="repo-scanner-report.md", help="Output report path"
@@ -88,24 +116,18 @@ def print_results(issues, created_urls=None):
     default=None,
     help="Override severity threshold (low/medium/high/critical)",
 )
-def main(config, output, output_json, create_issues, post_comment, full_scan, severity):
-    """AI-powered repository scanner for GitHub workflows."""
+@click.pass_context
+def scan(
+    ctx, config, output, output_json, create_issues, post_comment, full_scan, severity
+):
+    """Scan repository for issues."""
     cfg = Config.from_env_and_file(config)
 
     if severity:
         cfg.severity_threshold = severity
 
-    if not cfg.api_key:
-        console.print(
-            "[red]Error: No API key set. Use LLM_API_KEY or MIMO_API_KEY env var.[/red]"
-        )
-        sys.exit(1)
-
-    if not cfg.repo:
-        console.print(
-            "[red]Error: No repo set. Use GITHUB_REPOSITORY env var or --repo in config.[/red]"
-        )
-        sys.exit(1)
+    _require_api_key(cfg)
+    _require_repo(cfg)
 
     workspace = cfg.workspace or str(Path.cwd())
     console.print(f"[bold]Repo Scanner[/bold] — Scanning {cfg.repo}")
@@ -187,6 +209,80 @@ def main(config, output, output_json, create_issues, post_comment, full_scan, se
         console.print(f"  JSON report saved to {output_json}")
 
     print_results(issues, created_urls)
+
+
+@cli.command()
+@click.option("--config", "-c", default=None, help="Path to config YAML file")
+@click.option(
+    "--max-fixes",
+    default=None,
+    type=int,
+    help="Maximum number of issues to fix (default from config, fallback 3)",
+)
+@click.option(
+    "--severity",
+    "-s",
+    default=None,
+    help="Only fix issues at or above this severity (low/medium/high/critical)",
+)
+@click.pass_context
+def fix(ctx, config, max_fixes, severity):
+    """Auto-fix scanner issues and create PRs."""
+    cfg = Config.from_env_and_file(config)
+
+    _require_api_key(cfg)
+    _require_repo(cfg)
+
+    if not cfg.github_token:
+        console.print(
+            "[red]Error: No GitHub token set. Use GITHUB_TOKEN env var.[/red]"
+        )
+        sys.exit(1)
+
+    effective_max = max_fixes if max_fixes is not None else cfg.max_fixes
+    workspace = cfg.workspace or str(Path.cwd())
+
+    console.print(f"[bold]Repo Scanner Fix[/bold] — Fixing issues in {cfg.repo}")
+    console.print(f"  Model: {cfg.model} | Max fixes: {effective_max}")
+    if severity:
+        console.print(f"  Severity filter: {severity} and above")
+
+    results: list[FixResult] = run_fixes(cfg, effective_max, severity, workspace)
+
+    if not results:
+        console.print("[yellow]No open scanner issues found to fix.[/yellow]")
+        return
+
+    table = Table(title="Fix Results")
+    table.add_column("Issue #")
+    table.add_column("Title")
+    table.add_column("Status")
+    table.add_column("PR / Error")
+
+    for r in results:
+        if r.success:
+            table.add_row(
+                str(r.issue_number),
+                r.issue_title,
+                "[green]Success[/green]",
+                r.pr_url,
+            )
+        else:
+            table.add_row(
+                str(r.issue_number),
+                r.issue_title,
+                "[red]Failed[/red]",
+                r.error,
+            )
+
+    console.print(table)
+
+    successes = sum(1 for r in results if r.success)
+    console.print(f"\n  {successes}/{len(results)} fixes created successfully")
+
+
+def main():
+    cli()
 
 
 if __name__ == "__main__":

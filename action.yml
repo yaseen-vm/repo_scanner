@@ -45,6 +45,14 @@ inputs:
     description: "Path to config YAML file"
     required: false
     default: ""
+  mode:
+    description: "Action mode: 'scan' or 'fix'"
+    required: false
+    default: "scan"
+  max_fixes:
+    description: "Maximum number of issues to fix per run (fix mode only)"
+    required: false
+    default: "3"
 
 outputs:
   report_path:
@@ -97,44 +105,62 @@ runs:
         MAX_FILES: ${{ inputs.max_files }}
         IGNORE_PATTERNS: ${{ inputs.ignore_patterns }}
       run: |
-        CMD_ARGS=()
+        if [ "${{ inputs.mode }}" = "fix" ]; then
+          FIX_ARGS=("fix")
 
-        if [ "${{ inputs.severity_threshold }}" != "" ]; then
-          CMD_ARGS+=("--severity" "${{ inputs.severity_threshold }}")
-        fi
+          if [ "${{ inputs.max_fixes }}" != "" ]; then
+            FIX_ARGS+=("--max-fixes" "${{ inputs.max_fixes }}")
+          fi
 
-        if [ "${{ inputs.create_issues }}" = "true" ]; then
-          CMD_ARGS+=("--create-issues")
+          if [ "${{ inputs.severity_threshold }}" != "" ]; then
+            FIX_ARGS+=("--severity" "${{ inputs.severity_threshold }}")
+          fi
+
+          if [ "${{ inputs.config_file }}" != "" ]; then
+            FIX_ARGS+=("--config" "${{ inputs.config_file }}")
+          fi
+
+          python -m repo_scanner.main "${FIX_ARGS[@]}"
         else
-          CMD_ARGS+=("--no-create-issues")
+          CMD_ARGS=("scan")
+
+          if [ "${{ inputs.severity_threshold }}" != "" ]; then
+            CMD_ARGS+=("--severity" "${{ inputs.severity_threshold }}")
+          fi
+
+          if [ "${{ inputs.create_issues }}" = "true" ]; then
+            CMD_ARGS+=("--create-issues")
+          else
+            CMD_ARGS+=("--no-create-issues")
+          fi
+
+          if [ "${{ inputs.post_comment }}" = "true" ]; then
+            CMD_ARGS+=("--post-comment")
+          else
+            CMD_ARGS+=("--no-post-comment")
+          fi
+
+          if [ "${{ inputs.full_scan }}" = "true" ]; then
+            CMD_ARGS+=("--full-scan")
+          else
+            CMD_ARGS+=("--diff-only")
+          fi
+
+          if [ "${{ inputs.config_file }}" != "" ]; then
+            CMD_ARGS+=("--config" "${{ inputs.config_file }}")
+          fi
+
+          CMD_ARGS+=("--output" "/tmp/repo-scanner-report.md")
+          CMD_ARGS+=("--output-json" "/tmp/repo-scanner-report.json")
+
+          python -m repo_scanner.main "${CMD_ARGS[@]}"
+
+          echo "report_path=/tmp/repo-scanner-report.md" >> "$GITHUB_OUTPUT"
+          echo "json_report_path=/tmp/repo-scanner-report.json" >> "$GITHUB_OUTPUT"
+
+          ISSUES_COUNT=$(python -c "import json; data=json.load(open('/tmp/repo-scanner-report.json')); print(data.get('total_issues', 0))" 2>/dev/null || echo "0")
+          echo "total_issues=$ISSUES_COUNT" >> "$GITHUB_OUTPUT"
         fi
-
-        if [ "${{ inputs.post_comment }}" = "true" ]; then
-          CMD_ARGS+=("--post-comment")
-        else
-          CMD_ARGS+=("--no-post-comment")
-        fi
-
-        if [ "${{ inputs.full_scan }}" = "true" ]; then
-          CMD_ARGS+=("--full-scan")
-        else
-          CMD_ARGS+=("--diff-only")
-        fi
-
-        if [ "${{ inputs.config_file }}" != "" ]; then
-          CMD_ARGS+=("--config" "${{ inputs.config_file }}")
-        fi
-
-        CMD_ARGS+=("--output" "/tmp/repo-scanner-report.md")
-        CMD_ARGS+=("--output-json" "/tmp/repo-scanner-report.json")
-
-        python -m repo_scanner.main "${CMD_ARGS[@]}"
-
-        echo "report_path=/tmp/repo-scanner-report.md" >> "$GITHUB_OUTPUT"
-        echo "json_report_path=/tmp/repo-scanner-report.json" >> "$GITHUB_OUTPUT"
-
-        ISSUES_COUNT=$(python -c "import json; data=json.load(open('/tmp/repo-scanner-report.json')); print(data.get('total_issues', 0))" 2>/dev/null || echo "0")
-        echo "total_issues=$ISSUES_COUNT" >> "$GITHUB_OUTPUT"
 
 branding:
   icon: "search"

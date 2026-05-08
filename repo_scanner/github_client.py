@@ -69,6 +69,75 @@ def post_pr_comment(config: Config, pr_number: int, body: str) -> str:
     return comment.html_url
 
 
+def get_scanner_issues(
+    config: Config, severity_filter: str | None = None
+) -> list[dict]:
+    g = get_github_client(config)
+    repo = g.get_repo(config.repo)
+
+    severity_rank = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+    min_rank = severity_rank.get(severity_filter, 0) if severity_filter else 0
+
+    issues = repo.get_issues(labels=["repo-scanner"], state="open")
+    parsed = []
+
+    for issue in issues:
+        label_names = [l.name for l in issue.labels]
+        severity = "medium"
+        file_path = ""
+        line = 0
+
+        for lbl in label_names:
+            if lbl in severity_rank:
+                severity = lbl
+                break
+
+        if severity_rank.get(severity, 0) < min_rank:
+            continue
+
+        for line_text in (issue.body or "").split("\n"):
+            if line_text.startswith("**File:**"):
+                ref = line_text.split("`")[1] if "`" in line_text else ""
+                if ":" in ref:
+                    file_path, _, line_str = ref.rpartition(":")
+                    try:
+                        line = int(line_str)
+                    except ValueError:
+                        line = 0
+                else:
+                    file_path = ref
+                break
+
+        parsed.append(
+            {
+                "number": issue.number,
+                "title": issue.title,
+                "body": issue.body or "",
+                "labels": label_names,
+                "severity": severity,
+                "file": file_path,
+                "line": line,
+                "html_url": issue.html_url,
+            }
+        )
+
+    parsed.sort(key=lambda x: severity_rank.get(x["severity"], 0), reverse=True)
+    return parsed
+
+
+def create_pull_request(
+    config: Config,
+    title: str,
+    body: str,
+    head_branch: str,
+    base_branch: str = "main",
+) -> str:
+    g = get_github_client(config)
+    repo = g.get_repo(config.repo)
+    pr = repo.create_pull(title=title, body=body, head=head_branch, base=base_branch)
+    return pr.html_url
+
+
 def get_pr_number_from_event(event_path: str) -> int | None:
     import json
     from pathlib import Path
