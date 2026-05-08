@@ -102,7 +102,10 @@ def _parse_raw_issue(issue) -> dict:
             severity = lbl
             break
 
-    for line_text in (issue.body or "").split("\n"):
+    import re as _re
+
+    body_lines = (issue.body or "").split("\n")
+    for line_text in body_lines:
         if line_text.startswith("**File:**"):
             ref = line_text.split("`")[1] if "`" in line_text else ""
             if ":" in ref:
@@ -114,6 +117,29 @@ def _parse_raw_issue(issue) -> dict:
             else:
                 file_path = ref
             break
+
+    # Fallback: parse "## Affected Files" / "## Affected File" bullet list
+    if not file_path:
+        in_affected = False
+        for line_text in body_lines:
+            if _re.match(r"^##\s+Affected Files?", line_text, _re.IGNORECASE):
+                in_affected = True
+                continue
+            if in_affected:
+                if line_text.startswith("#"):
+                    break
+                m = _re.search(r"`([^`]+)`", line_text)
+                if m:
+                    ref = m.group(1)
+                    if ":" in ref:
+                        file_path, _, line_str = ref.rpartition(":")
+                        try:
+                            line = int(line_str)
+                        except ValueError:
+                            line = 0
+                    else:
+                        file_path = ref
+                    break
 
     return {
         "number": issue.number,

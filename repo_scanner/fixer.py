@@ -218,6 +218,17 @@ def run_fixes(
 
     results: list[FixResult] = []
     for issue in issues[:max_fixes]:
+        if not issue["file"]:
+            results.append(
+                FixResult(
+                    issue_number=issue["number"],
+                    issue_title=issue["title"],
+                    success=False,
+                    error="No file path found in issue body — cannot auto-fix.",
+                )
+            )
+            continue
+
         file_path = Path(workspace) / issue["file"]
         if not file_path.exists():
             results.append(
