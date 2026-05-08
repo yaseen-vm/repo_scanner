@@ -53,6 +53,10 @@ inputs:
     description: "Maximum number of issues to fix per run (fix mode only)"
     required: false
     default: "3"
+  github_token:
+    description: "GitHub token for API access (defaults to github.token)"
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   report_path:
@@ -94,7 +98,7 @@ runs:
         MIMO_API_KEY: ${{ inputs.mimo_api_key || inputs.llm_api_key }}
         LLM_BASE_URL: ${{ inputs.llm_base_url }}
         LLM_MODEL: ${{ inputs.llm_model }}
-        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_EVENT_NAME: ${{ github.event_name }}
         GITHUB_EVENT_PATH: ${{ github.event_path }}
