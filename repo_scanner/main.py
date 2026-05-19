@@ -10,8 +10,11 @@ from .analyzer import analyze_files, filter_by_threshold
 from .config import Config
 from .fixer import FixResult, run_fixes
 from .github_client import (
+    close_duplicate_issue,
+    close_resolved_issue,
     create_issue,
     ensure_labels,
+    find_duplicate_issues,
     get_existing_issue_titles,
     get_pr_number_from_event,
     post_pr_comment,
@@ -22,6 +25,7 @@ from .reporter import (
     generate_markdown_report,
     save_report,
 )
+from .notifications import notify_scan_completed, notify_fix_completed
 from .scanner import FileChange, get_changed_files_from_event, scan_files
 
 console = Console()
@@ -184,16 +188,36 @@ def scan(
         existing_titles: set[str] = set()
         try:
             existing_titles = get_existing_issue_titles(cfg)
-            console.print(f"  Found {len(existing_titles)} existing open issue(s), skipping duplicates")
+            console.print(
+                f"  Found {len(existing_titles)} existing open issue(s), skipping duplicates"
+            )
         except Exception as e:
-            console.print(f"    [yellow]Warning: Could not fetch existing issues: {e}[/yellow]")
+            console.print(
+                f"    [yellow]Warning: Could not fetch existing issues: {e}[/yellow]"
+            )
 
         console.print("  Creating GitHub issues...")
         for issue in issues:
             try:
+                # Check for similar duplicates before creating
+                title = f"[{issue.severity.upper()}] {issue.title}"
+                duplicates = find_duplicate_issues(cfg, title)
+
+                if duplicates:
+                    # Close the duplicate issue
+                    duplicate_of = duplicates[0]["number"]
+                    console.print(
+                        f"    Skipping duplicate: {title} (similar to #{duplicate_of})"
+                    )
+                    # Optionally close the duplicate if it's a new scan finding
+                    # close_duplicate_issue(cfg, issue.number, duplicate_of)
+                    continue
+
                 url = create_issue(cfg, issue, cfg.sha, existing_titles)
                 if url is None:
-                    console.print(f"    Skipped (duplicate): [{issue.severity.upper()}] {issue.title}")
+                    console.print(
+                        f"    Skipped (duplicate): [{issue.severity.upper()}] {issue.title}"
+                    )
                 else:
                     created_urls.append(url)
                     console.print(f"    Created: {url}")
@@ -219,6 +243,10 @@ def scan(
         json_report = generate_json_report(issues, cfg.repo, cfg.sha)
         save_report(json_report, output_json)
         console.print(f"  JSON report saved to {output_json}")
+
+    # Send completion notification
+    if os.environ.get("EMAIL_NOTIFICATIONS", "false").lower() == "true":
+        notify_scan_completed(cfg, len(issues), len(created_urls))
 
     print_results(issues, created_urls)
 
@@ -263,7 +291,11 @@ def fix(ctx, config, max_fixes, severity, issue_number, min_age_days):
         )
         sys.exit(1)
 
-    effective_max = 1 if issue_number is not None else (max_fixes if max_fixes is not None else cfg.max_fixes)
+    effective_max = (
+        1
+        if issue_number is not None
+        else (max_fixes if max_fixes is not None else cfg.max_fixes)
+    )
     workspace = cfg.workspace or str(Path.cwd())
 
     console.print(f"[bold]Repo Scanner Fix[/bold] — Fixing issues in {cfg.repo}")
@@ -276,7 +308,10 @@ def fix(ctx, config, max_fixes, severity, issue_number, min_age_days):
         console.print(f"  Age gate: only issues older than {min_age_days} day(s)")
 
     results: list[FixResult] = run_fixes(
-        cfg, effective_max, severity, workspace,
+        cfg,
+        effective_max,
+        severity,
+        workspace,
         issue_number=issue_number,
         min_age_days=min_age_days,
     )
@@ -311,6 +346,10 @@ def fix(ctx, config, max_fixes, severity, issue_number, min_age_days):
 
     successes = sum(1 for r in results if r.success)
     console.print(f"\n  {successes}/{len(results)} fixes created successfully")
+
+    # Send completion notification
+    if os.environ.get("EMAIL_NOTIFICATIONS", "false").lower() == "true":
+        notify_fix_completed(cfg, len(results), successes)
 
     github_output = os.environ.get("GITHUB_OUTPUT", "")
     if github_output:

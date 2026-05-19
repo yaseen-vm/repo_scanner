@@ -6,11 +6,9 @@ from pathlib import Path
 from openai import OpenAI
 
 from .config import Config
-from .github_client import create_pull_request, get_scanner_issues
+from .github_client import close_resolved_issue, create_pull_request, get_scanner_issues
 
-_TEXT_BYTES = bytearray(
-    {7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7F}
-)
+_TEXT_BYTES = bytearray({7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7F})
 
 
 def _is_binary(path: Path) -> bool:
@@ -22,6 +20,7 @@ def _is_binary(path: Path) -> bool:
         return True
     non_text = sum(1 for b in chunk if b not in _TEXT_BYTES)
     return non_text / max(len(chunk), 1) > 0.30
+
 
 FIX_SYSTEM_PROMPT = """You are a code fixer. Given a file and a bug/issue description, return the COMPLETE fixed file.
 
@@ -121,6 +120,36 @@ def _run_git(args: list[str], cwd: str | None = None) -> subprocess.CompletedPro
         text=True,
         cwd=cwd,
     )
+
+
+def _is_already_resolved_file_issue(issue: dict) -> bool:
+    """Check if an issue is about a corrupted/missing file that was already resolved."""
+    title = issue.get("title", "").lower()
+    description = issue.get("body", "").lower()
+
+    # Check for indicators that this is about a corrupted/missing file
+    corrupted_indicators = [
+        "corrupted",
+        "malicious",
+        "invalid",
+        "binary",
+        "encoded",
+        "temp.html",
+        "temp file",
+        "temporary file",
+    ]
+
+    # Check if the issue mentions any corrupted file indicators
+    for indicator in corrupted_indicators:
+        if indicator in title or indicator in description:
+            return True
+
+    # Check if the file path suggests it's a temporary file
+    file_path = issue.get("file", "").lower()
+    if file_path.startswith("temp") or file_path.endswith(".tmp"):
+        return True
+
+    return False
 
 
 def _get_default_branch(config: Config, workspace: str) -> str:
@@ -231,14 +260,32 @@ def run_fixes(
 
         file_path = Path(workspace) / issue["file"]
         if not file_path.exists():
-            results.append(
-                FixResult(
-                    issue_number=issue["number"],
-                    issue_title=issue["title"],
-                    success=False,
-                    error=f"File not found: {issue['file']}",
+            # Check if this is a corrupted/missing file issue that was already resolved
+            if _is_already_resolved_file_issue(issue):
+                # Close the issue as already resolved
+                close_resolved_issue(
+                    config,
+                    issue["number"],
+                    f"The file `{issue['file']}` mentioned in this issue no longer exists in the repository. "
+                    f"It appears to have been intentionally deleted (possibly because it was corrupted or invalid).",
                 )
-            )
+                results.append(
+                    FixResult(
+                        issue_number=issue["number"],
+                        issue_title=issue["title"],
+                        success=True,  # Mark as success since we closed the issue
+                        pr_url="Issue closed as already resolved",
+                    )
+                )
+            else:
+                results.append(
+                    FixResult(
+                        issue_number=issue["number"],
+                        issue_title=issue["title"],
+                        success=False,
+                        error=f"File not found: {issue['file']}",
+                    )
+                )
             continue
 
         if _is_binary(file_path):

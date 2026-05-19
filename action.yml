@@ -65,6 +65,34 @@ inputs:
     description: "Only fix issues older than this many days, 0 = no limit (fix mode only)"
     required: false
     default: "0"
+  email_notifications:
+    description: "Enable email notifications (true/false)"
+    required: false
+    default: "false"
+  smtp_server:
+    description: "SMTP server for email notifications"
+    required: false
+    default: ""
+  smtp_port:
+    description: "SMTP port for email notifications"
+    required: false
+    default: "587"
+  smtp_username:
+    description: "SMTP username for email notifications"
+    required: false
+    default: ""
+  smtp_password:
+    description: "SMTP password for email notifications"
+    required: false
+    default: ""
+  sender_email:
+    description: "Sender email address for notifications"
+    required: false
+    default: ""
+  recipient_email:
+    description: "Recipient email address for notifications"
+    required: false
+    default: ""
 
 outputs:
   report_path:
@@ -122,6 +150,13 @@ runs:
         SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
         MAX_FILES: ${{ inputs.max_files }}
         IGNORE_PATTERNS: ${{ inputs.ignore_patterns }}
+        EMAIL_NOTIFICATIONS: ${{ inputs.email_notifications }}
+        SMTP_SERVER: ${{ inputs.smtp_server }}
+        SMTP_PORT: ${{ inputs.smtp_port }}
+        SMTP_USERNAME: ${{ inputs.smtp_username }}
+        SMTP_PASSWORD: ${{ inputs.smtp_password }}
+        SENDER_EMAIL: ${{ inputs.sender_email }}
+        RECIPIENT_EMAIL: ${{ inputs.recipient_email }}
       run: |
         if [ "${{ inputs.mode }}" = "fix" ]; then
           FIX_ARGS=("fix")

@@ -2,8 +2,10 @@ import json
 from dataclasses import dataclass, field
 
 from openai import OpenAI
+from openai import AuthenticationError, RateLimitError
 
 from .config import Config
+from .notifications import notify_token_expired, notify_token_exhausted
 from .scanner import FileChange
 
 SYSTEM_PROMPT = """You are an expert code reviewer and security analyst. Analyze the provided code for:
@@ -103,6 +105,20 @@ def analyze_files(files: list[FileChange], config: Config) -> list[Issue]:
                         suggestion=item.get("suggestion", ""),
                     )
                 )
+        except AuthenticationError as e:
+            # Token expired or invalid
+            error_msg = str(e)
+            print(f"Authentication error: {error_msg}")
+            notify_token_expired(config, error_msg)
+            # Re-raise to stop processing
+            raise
+        except RateLimitError as e:
+            # Rate limit exceeded (quota exhausted)
+            error_msg = str(e)
+            print(f"Rate limit error: {error_msg}")
+            notify_token_exhausted(config, error_msg)
+            # Continue processing other batches (might have quota left)
+            continue
         except json.JSONDecodeError:
             continue
         except Exception:
