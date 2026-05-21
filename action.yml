@@ -1,6 +1,6 @@
-name: "Repo Scanner"
-description: "AI-powered code analysis that finds bugs, security issues, and code quality problems"
-author: "repo-scanner"
+name: "Repo Scanner — AI Code Analysis & Auto-Fix"
+description: "AI-powered scanner that finds bugs, security issues, and auto-fixes them with label-based human approval. Supports OpenAI, Claude, Gemini, and Ollama."
+author: "yaseen-vm"
 
 inputs:
   mimo_api_key:
@@ -254,5 +254,5 @@ runs:
         sarif_file: /tmp/repo-scanner-results.sarif
 
 branding:
-  icon: "search"
+  icon: "shield"
   color: "blue"
