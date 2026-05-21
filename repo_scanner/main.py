@@ -318,7 +318,9 @@ def fix(ctx, config, max_fixes, severity, issue_number, min_age_days):
     workspace = cfg.workspace or str(Path.cwd())
 
     console.print(f"[bold]Repo Scanner Fix[/bold] — Fixing issues in {cfg.repo}")
-    console.print(f"  Model: {cfg.model} | Max fixes: {effective_max}")
+    console.print(
+        f"  Model: {cfg.model} | Max fixes: {effective_max} | Validate: {cfg.validate_fixes}"
+    )
     if issue_number:
         console.print(f"  Targeting issue: #{issue_number}")
     if severity:
@@ -333,6 +335,7 @@ def fix(ctx, config, max_fixes, severity, issue_number, min_age_days):
         workspace,
         issue_number=issue_number,
         min_age_days=min_age_days,
+        validate_fixes=cfg.validate_fixes,
     )
 
     if not results:
@@ -354,11 +357,14 @@ def fix(ctx, config, max_fixes, severity, issue_number, min_age_days):
                 r.pr_url,
             )
         else:
+            error_display = r.error
+            if r.validation_error:
+                error_display = f"Validation failed: {r.validation_error}"
             table.add_row(
                 str(r.issue_number),
                 r.issue_title,
                 "[red]Failed[/red]",
-                r.error,
+                error_display,
             )
 
     console.print(table)

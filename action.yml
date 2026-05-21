@@ -73,6 +73,10 @@ inputs:
     description: "Generate SARIF output for GitHub Security tab (true/false)"
     required: false
     default: "true"
+  validate_fixes:
+    description: "Run linter on generated fixes before creating PR (true/false)"
+    required: false
+    default: "true"
   email_notifications:
     description: "Enable email notifications (true/false)"
     required: false
@@ -162,6 +166,7 @@ runs:
         MAX_FILES: ${{ inputs.max_files }}
         IGNORE_PATTERNS: ${{ inputs.ignore_patterns }}
         CATEGORIES: ${{ inputs.categories }}
+        VALIDATE_FIXES: ${{ inputs.validate_fixes }}
         EMAIL_NOTIFICATIONS: ${{ inputs.email_notifications }}
         SMTP_SERVER: ${{ inputs.smtp_server }}
         SMTP_PORT: ${{ inputs.smtp_port }}

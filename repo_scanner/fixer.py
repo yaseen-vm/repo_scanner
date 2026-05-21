@@ -1,4 +1,5 @@
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,27 @@ from .github_client import close_resolved_issue, create_pull_request, get_scanne
 
 _TEXT_BYTES = bytearray({7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7F})
 
+VALIDATORS: dict[str, list[str]] = {
+    "python": ["ruff", "check", "{file}"],
+    "javascript": ["npx", "eslint", "--no-eslintrc", "{file}"],
+    "typescript": ["npx", "tsc", "--noEmit", "--allowJs", "{file}"],
+    "go": ["gofmt", "-e", "{file}"],
+    "rust": ["rustfmt", "--check", "{file}"],
+    "ruby": ["ruby", "-c", "{file}"],
+}
+
+EXTENSION_TO_LANGUAGE: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+}
+
 
 def _is_binary(path: Path) -> bool:
     try:
@@ -20,6 +42,34 @@ def _is_binary(path: Path) -> bool:
         return True
     non_text = sum(1 for b in chunk if b not in _TEXT_BYTES)
     return non_text / max(len(chunk), 1) > 0.30
+
+
+def validate_fix(file_path: Path, language: str) -> tuple[bool, str]:
+    validators = VALIDATORS.get(language)
+    if not validators:
+        return True, ""
+
+    cmd = [c.replace("{file}", str(file_path)) for c in validators]
+    tool = cmd[0]
+
+    if not shutil.which(tool):
+        return True, ""
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            return True, ""
+        error_output = result.stdout.strip() or result.stderr.strip()
+        return False, error_output
+    except subprocess.TimeoutExpired:
+        return False, f"Validation timed out after 60s"
+    except Exception as e:
+        return True, ""
 
 
 FIX_SYSTEM_PROMPT = """You are a code fixer. Given a file and a bug/issue description, return the COMPLETE fixed file.
@@ -39,6 +89,7 @@ class FixResult:
     success: bool
     pr_url: str = ""
     error: str = ""
+    validation_error: str = ""
 
 
 def parse_issue_fields(body: str) -> dict:
@@ -171,6 +222,7 @@ def apply_fix_and_create_pr(
     issue: dict,
     fix_content: str,
     workspace: str,
+    validate: bool = True,
 ) -> str:
     issue_number = issue["number"]
     slug = _slugify(issue["title"])
@@ -178,6 +230,7 @@ def apply_fix_and_create_pr(
     base_branch = _get_default_branch(config, workspace)
 
     file_path = Path(workspace) / issue["file"]
+    language = EXTENSION_TO_LANGUAGE.get(file_path.suffix.lower(), "")
 
     result = _run_git(["checkout", base_branch], cwd=workspace)
     if result.returncode != 0:
@@ -188,8 +241,21 @@ def apply_fix_and_create_pr(
         raise RuntimeError(f"git checkout -b {branch_name} failed: {result.stderr}")
 
     try:
+        original_content = None
+        if file_path.exists():
+            original_content = file_path.read_text(encoding="utf-8")
+
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(fix_content, encoding="utf-8")
+
+        if validate and language:
+            passed, error_output = validate_fix(file_path, language)
+            if not passed:
+                if original_content is not None:
+                    file_path.write_text(original_content, encoding="utf-8")
+                else:
+                    file_path.unlink(missing_ok=True)
+                raise RuntimeError(f"Validation failed: {error_output}")
 
         result = _run_git(["add", issue["file"]], cwd=workspace)
         if result.returncode != 0:
@@ -235,6 +301,7 @@ def run_fixes(
     workspace: str,
     issue_number: int | None = None,
     min_age_days: int = 0,
+    validate_fixes: bool = True,
 ) -> list[FixResult]:
     issues = get_scanner_issues(
         config,
@@ -313,7 +380,9 @@ def run_fixes(
                 )
                 continue
 
-            pr_url = apply_fix_and_create_pr(config, issue, fix_content, workspace)
+            pr_url = apply_fix_and_create_pr(
+                config, issue, fix_content, workspace, validate=validate_fixes
+            )
             results.append(
                 FixResult(
                     issue_number=issue["number"],
@@ -323,12 +392,18 @@ def run_fixes(
                 )
             )
         except Exception as e:
+            error_msg = str(e)
+            validation_err = ""
+            if error_msg.startswith("Validation failed: "):
+                validation_err = error_msg[len("Validation failed: ") :]
+                error_msg = error_msg
             results.append(
                 FixResult(
                     issue_number=issue["number"],
                     issue_title=issue["title"],
                     success=False,
-                    error=str(e),
+                    error=error_msg,
+                    validation_error=validation_err,
                 )
             )
 

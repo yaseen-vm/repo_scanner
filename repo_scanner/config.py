@@ -33,6 +33,7 @@ class Config:
     categories: list[str] = field(
         default_factory=lambda: ["security", "bug", "performance", "quality"]
     )
+    validate_fixes: bool = True
     event_name: str = ""
     event_path: str = ""
     sha: str = ""
@@ -74,6 +75,10 @@ class Config:
         categories_env = os.environ.get("CATEGORIES")
         if categories_env:
             cfg.categories = [c.strip() for c in categories_env.split(",")]
+
+        validate_fixes_env = os.environ.get("VALIDATE_FIXES")
+        if validate_fixes_env:
+            cfg.validate_fixes = validate_fixes_env.lower() in ("true", "1", "yes")
 
         return cfg
 
