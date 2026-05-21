@@ -1,5 +1,5 @@
 name: "Repo Scanner — AI Code Analysis & Auto-Fix"
-description: "AI-powered scanner that finds bugs, security issues, and auto-fixes them with label-based human approval. Supports OpenAI, Claude, Gemini, and Ollama."
+description: "AI-powered scanner that finds bugs, security issues, and auto-fixes them with linter validation."
 author: "yaseen-vm"
 
 inputs:
