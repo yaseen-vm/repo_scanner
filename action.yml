@@ -65,6 +65,10 @@ inputs:
     description: "Only fix issues older than this many days, 0 = no limit (fix mode only)"
     required: false
     default: "0"
+  sarif_output:
+    description: "Generate SARIF output for GitHub Security tab (true/false)"
+    required: false
+    default: "true"
   email_notifications:
     description: "Enable email notifications (true/false)"
     required: false
@@ -110,6 +114,9 @@ outputs:
   pr_urls:
     description: "Comma-separated URLs of auto-fix PRs (fix mode only)"
     value: ${{ steps.run-scanner.outputs.pr_urls }}
+  sarif_path:
+    description: "Path to the SARIF report file"
+    value: ${{ steps.run-scanner.outputs.sarif_path }}
 
 runs:
   using: "composite"
@@ -214,6 +221,10 @@ runs:
           CMD_ARGS+=("--output" "/tmp/repo-scanner-report.md")
           CMD_ARGS+=("--output-json" "/tmp/repo-scanner-report.json")
 
+          if [ "${{ inputs.sarif_output }}" = "true" ]; then
+            CMD_ARGS+=("--output-sarif" "/tmp/repo-scanner-results.sarif")
+          fi
+
           python -m repo_scanner.main "${CMD_ARGS[@]}"
 
           echo "report_path=/tmp/repo-scanner-report.md" >> "$GITHUB_OUTPUT"
@@ -221,7 +232,16 @@ runs:
 
           ISSUES_COUNT=$(python -c "import json; data=json.load(open('/tmp/repo-scanner-report.json')); print(data.get('total_issues', 0))" 2>/dev/null || echo "0")
           echo "total_issues=$ISSUES_COUNT" >> "$GITHUB_OUTPUT"
-        fi
+
+          if [ "${{ inputs.sarif_output }}" = "true" ]; then
+            echo "sarif_path=/tmp/repo-scanner-results.sarif" >> "$GITHUB_OUTPUT"
+          fi
+
+    - name: Upload SARIF
+      uses: github/codeql-action/upload-sarif@v3
+      if: inputs.sarif_output == 'true' && always()
+      with:
+        sarif_file: /tmp/repo-scanner-results.sarif
 
 branding:
   icon: "search"
