@@ -41,6 +41,10 @@ inputs:
     description: "Comma-separated glob patterns to ignore"
     required: false
     default: ""
+  categories:
+    description: "Comma-separated categories to analyze: security,bug,performance,quality"
+    required: false
+    default: "security,bug,performance,quality"
   config_file:
     description: "Path to config YAML file"
     required: false
@@ -157,6 +161,7 @@ runs:
         SEVERITY_THRESHOLD: ${{ inputs.severity_threshold }}
         MAX_FILES: ${{ inputs.max_files }}
         IGNORE_PATTERNS: ${{ inputs.ignore_patterns }}
+        CATEGORIES: ${{ inputs.categories }}
         EMAIL_NOTIFICATIONS: ${{ inputs.email_notifications }}
         SMTP_SERVER: ${{ inputs.smtp_server }}
         SMTP_PORT: ${{ inputs.smtp_port }}
