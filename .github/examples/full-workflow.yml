@@ -1,0 +1,69 @@
+name: Scan + Auto-Fix
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: '0 9 * * 1'  # Weekly fix run on Mondays at 9am UTC
+  workflow_dispatch:
+
+jobs:
+  scan:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Repo Scanner
+        uses: yaseen-vm/repo_scanner@v1
+        with:
+          mimo_api_key: ${{ secrets.MIMO_API_KEY }}
+          severity_threshold: medium
+          max_files: 50
+          create_issues: ${{ github.event_name == 'push' }}
+          post_comment: ${{ github.event_name == 'pull_request' }}
+          sarif_output: true
+          categories: security,bug,performance,quality
+          validate_fixes: true
+
+      - name: Upload Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repo-scanner-report
+          path: |
+            /tmp/repo-scanner-report.md
+            /tmp/repo-scanner-report.json
+            /tmp/repo-scanner-results.sarif
+
+  fix:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Auto-Fix Issues
+        uses: yaseen-vm/repo_scanner@v1
+        with:
+          mimo_api_key: ${{ secrets.MIMO_API_KEY }}
+          mode: fix
+          severity_threshold: high
+          max_fixes: "3"
+          validate_fixes: true

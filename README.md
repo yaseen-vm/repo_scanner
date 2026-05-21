@@ -1,5 +1,7 @@
 # Repo Scanner
 
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Repo%20Scanner-blue?logo=github)](https://github.com/marketplace/actions/repo-scanner-ai-code-analysis-auto-fix)
+
 AI-powered code analysis GitHub Action powered by [Xiaomi MiMo](https://platform.xiaomimimo.com). Scans your codebase for bugs, security vulnerabilities, code quality issues, and performance problems.
 
 ## Features

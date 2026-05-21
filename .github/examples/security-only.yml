@@ -1,0 +1,41 @@
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Security Scan
+        uses: yaseen-vm/repo_scanner@v1
+        with:
+          mimo_api_key: ${{ secrets.MIMO_API_KEY }}
+          severity_threshold: high
+          categories: security
+          max_files: 100
+          sarif_output: true
+          create_issues: true
+          post_comment: true
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-report
+          path: |
+            /tmp/repo-scanner-report.md
+            /tmp/repo-scanner-results.sarif

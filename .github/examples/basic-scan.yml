@@ -1,0 +1,35 @@
+name: Code Scan
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Repo Scanner
+        uses: yaseen-vm/repo_scanner@v1
+        with:
+          mimo_api_key: ${{ secrets.MIMO_API_KEY }}
+          severity_threshold: medium
+          max_files: 50
+          post_comment: true
+
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repo-scanner-report
+          path: /tmp/repo-scanner-report.md
