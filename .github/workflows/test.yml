@@ -11,6 +11,7 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  security-events: write
 
 jobs:
   scan:
@@ -41,6 +42,12 @@ jobs:
           path: |
             /tmp/repo-scanner-report.md
             /tmp/repo-scanner-report.json
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: /tmp/repo-scanner-results.sarif
 
       - name: Report issue count
         if: always()

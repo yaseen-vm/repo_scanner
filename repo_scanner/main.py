@@ -23,6 +23,7 @@ from .reporter import (
     build_pr_summary,
     generate_json_report,
     generate_markdown_report,
+    generate_sarif_report,
     save_report,
 )
 from .notifications import notify_scan_completed, notify_fix_completed
@@ -102,6 +103,11 @@ def cli(ctx, config):
 )
 @click.option("--output-json", default=None, help="Output JSON report path")
 @click.option(
+    "--output-sarif",
+    default=None,
+    help="Output SARIF report path (e.g. /tmp/repo-scanner-results.sarif)",
+)
+@click.option(
     "--create-issues/--no-create-issues",
     default=False,
     help="Create GitHub issues for findings",
@@ -124,7 +130,15 @@ def cli(ctx, config):
 )
 @click.pass_context
 def scan(
-    ctx, config, output, output_json, create_issues, post_comment, full_scan, severity
+    ctx,
+    config,
+    output,
+    output_json,
+    output_sarif,
+    create_issues,
+    post_comment,
+    full_scan,
+    severity,
 ):
     """Scan repository for issues."""
     cfg = Config.from_env_and_file(config)
@@ -243,6 +257,11 @@ def scan(
         json_report = generate_json_report(issues, cfg.repo, cfg.sha)
         save_report(json_report, output_json)
         console.print(f"  JSON report saved to {output_json}")
+
+    if output_sarif:
+        sarif_report = generate_sarif_report(issues, cfg.repo, cfg.sha)
+        save_report(sarif_report, output_sarif)
+        console.print(f"  SARIF report saved to {output_sarif}")
 
     # Send completion notification
     if os.environ.get("EMAIL_NOTIFICATIONS", "false").lower() == "true":

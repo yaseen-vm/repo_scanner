@@ -68,6 +68,63 @@ def generate_markdown_report(
     return "\n".join(lines)
 
 
+SEVERITY_TO_SARIF_LEVEL = {
+    "critical": "error",
+    "high": "error",
+    "medium": "warning",
+    "low": "note",
+}
+
+
+def _slugify(text: str) -> str:
+    return text.lower().replace(" ", "-").replace("_", "-")
+
+
+def generate_sarif_report(issues: list[Issue], repo: str, commit_sha: str = "") -> str:
+    results = []
+    for issue in issues:
+        rule_id = f"{issue.category}/{_slugify(issue.title)}"
+        level = SEVERITY_TO_SARIF_LEVEL.get(issue.severity, "warning")
+        results.append(
+            {
+                "ruleId": rule_id,
+                "level": level,
+                "message": {"text": issue.description},
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": issue.file,
+                                "index": 0,
+                            },
+                            "region": {
+                                "startLine": max(issue.line, 1),
+                            },
+                        }
+                    }
+                ],
+            }
+        )
+
+    sarif = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "repo-scanner",
+                        "informationUri": "https://github.com/yaseen-vm/repo_scanner",
+                        "rules": [],
+                    }
+                },
+                "results": results,
+            }
+        ],
+    }
+    return json.dumps(sarif, indent=2)
+
+
 def generate_json_report(issues: list[Issue], repo: str, commit_sha: str = "") -> str:
     report = {
         "repo": repo,
