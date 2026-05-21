@@ -1,0 +1,87 @@
+name: Repo Scanner - Fix
+
+on:
+  workflow_call:
+    inputs:
+      max_fixes:
+        description: "Maximum number of issues to fix per run"
+        type: string
+        default: "3"
+      severity_threshold:
+        description: "Minimum severity to fix (low/medium/high/critical)"
+        type: string
+        default: "high"
+      issue_number:
+        description: "Fix a specific issue by number"
+        type: string
+        default: ""
+      min_age_days:
+        description: "Only fix issues older than this many days, 0 = no limit"
+        type: string
+        default: "0"
+      llm_model:
+        description: "Model name to use for analysis"
+        type: string
+        default: "mimo-v2.5-pro"
+      llm_base_url:
+        description: "Base URL for the LLM API"
+        type: string
+        default: "https://api.xiaomimimo.com/v1"
+      config_file:
+        description: "Path to config YAML file"
+        type: string
+        default: ""
+    secrets:
+      mimo_api_key:
+        description: "MiMo API key"
+        required: false
+      llm_api_key:
+        description: "LLM API key (fallback if mimo_api_key not set)"
+        required: false
+      github_token:
+        description: "GitHub token for API access (defaults to github.token)"
+        required: false
+    outputs:
+      fixes_created:
+        description: "Number of auto-fix PRs created"
+        value: ${{ jobs.fix.outputs.fixes_created }}
+      pr_urls:
+        description: "Comma-separated URLs of auto-fix PRs"
+        value: ${{ jobs.fix.outputs.pr_urls }}
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    outputs:
+      fixes_created: ${{ steps.fix.outputs.fixes_created }}
+      pr_urls: ${{ steps.fix.outputs.pr_urls }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "repo-scanner[bot]"
+          git config user.email "repo-scanner[bot]@users.noreply.github.com"
+
+      - name: Repo Scanner Fix
+        uses: yaseen-vm/repo_scanner@master
+        id: fix
+        with:
+          mimo_api_key: ${{ secrets.mimo_api_key }}
+          llm_api_key: ${{ secrets.llm_api_key }}
+          github_token: ${{ secrets.github_token || github.token }}
+          llm_base_url: ${{ inputs.llm_base_url }}
+          llm_model: ${{ inputs.llm_model }}
+          mode: fix
+          max_fixes: ${{ inputs.max_fixes }}
+          severity_threshold: ${{ inputs.severity_threshold }}
+          issue_number: ${{ inputs.issue_number }}
+          min_age_days: ${{ inputs.min_age_days }}
+          config_file: ${{ inputs.config_file }}

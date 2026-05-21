@@ -16,10 +16,10 @@ AI-powered code analysis GitHub Action powered by [Xiaomi MiMo](https://platform
 
 ### 1. Add the Action to Your Workflow
 
-Create `.github/workflows/repo-scanner.yml`:
+Create `.github/workflows/repo-scanner.yml` — just a few lines:
 
 ```yaml
-name: Code Analysis
+name: Code Scan
 
 on:
   pull_request:
@@ -27,25 +27,16 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
-
 jobs:
   scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Repo Scanner
-        uses: your-username/repo-scanner@v1
-        with:
-          llm_api_key: ${{ secrets.LLM_API_KEY }}
-          severity_threshold: medium
-          create_issues: true
-          post_comment: true
+    uses: yaseen-vm/repo_scanner/.github/workflows/reusable-scan.yml@master
+    with:
+      severity_threshold: medium
+    secrets:
+      mimo_api_key: ${{ secrets.MIMO_API_KEY }}
 ```
+
+That's it. The reusable workflow handles checkout, setup, scanning, and report uploads.
 
 ### 2. Add Your MiMo API Key as a Secret
 
@@ -66,7 +57,8 @@ The scanner will run on PRs and pushes to main.
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `llm_api_key` | (required) | API key for the LLM provider (MiMo API key) |
+| `mimo_api_key` | (required) | MiMo API key |
+| `llm_api_key` | (fallback) | API key if mimo_api_key not set |
 | `llm_base_url` | `https://api.xiaomimimo.com/v1` | API endpoint URL |
 | `llm_model` | `mimo-v2.5-pro` | Model to use for analysis |
 | `severity_threshold` | `medium` | Min severity: `low`, `medium`, `high`, `critical` |
@@ -76,6 +68,18 @@ The scanner will run on PRs and pushes to main.
 | `full_scan` | `false` | Scan all files vs only changed |
 | `ignore_patterns` | (see below) | Comma-separated glob patterns |
 | `config_file` | (empty) | Path to config YAML file |
+
+### Reusable Workflow Inputs
+
+The reusable workflows (`reusable-scan.yml`, `reusable-fix.yml`) accept the same inputs. Call them with `uses:`:
+
+```yaml
+# Scan workflow
+uses: yaseen-vm/repo_scanner/.github/workflows/reusable-scan.yml@master
+
+# Fix workflow
+uses: yaseen-vm/repo_scanner/.github/workflows/reusable-fix.yml@master
+```
 
 ### Environment Variables
 
@@ -103,6 +107,28 @@ ignore_patterns:
   - "**/test/**"
   - "**/vendor/**"
   - "*.test.js"
+```
+
+## Auto-Fix
+
+Create `.github/workflows/fix.yml` to auto-fix issues and raise PRs:
+
+```yaml
+name: Fix Issues
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * 1'
+
+jobs:
+  fix:
+    uses: yaseen-vm/repo_scanner/.github/workflows/reusable-fix.yml@master
+    with:
+      severity_threshold: high
+      max_fixes: "3"
+    secrets:
+      mimo_api_key: ${{ secrets.MIMO_API_KEY }}
 ```
 
 ## CLI Usage
