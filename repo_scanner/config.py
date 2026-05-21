@@ -30,6 +30,9 @@ class Config:
     max_files: int = 50
     max_file_size: int = 100_000
     max_fixes: int = 3
+    categories: list[str] = field(
+        default_factory=lambda: ["security", "bug", "performance", "quality"]
+    )
     event_name: str = ""
     event_path: str = ""
     sha: str = ""
@@ -67,6 +70,10 @@ class Config:
         ignore_env = os.environ.get("IGNORE_PATTERNS")
         if ignore_env:
             cfg.ignore_patterns = [p.strip() for p in ignore_env.split(",")]
+
+        categories_env = os.environ.get("CATEGORIES")
+        if categories_env:
+            cfg.categories = [c.strip() for c in categories_env.split(",")]
 
         return cfg
 
