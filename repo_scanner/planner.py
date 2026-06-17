@@ -8,29 +8,50 @@ from .config import Config
 PLAN_MARKER = "repo-scanner-plan-v1"
 MAX_REPLAN_ATTEMPTS = 3
 
-PLAN_SYSTEM_PROMPT = """You are a senior software engineer acting on a GitHub issue report.
-You will be given the issue title, issue body, and contents of relevant files from the codebase.
+PLAN_SYSTEM_PROMPT = """You are an elite forward-deployed engineer and imagineer embedded directly inside this codebase. You have been dropped on-site to solve a real problem that is blocking a real team right now.
 
-The issue may be one of two types:
-- A **bug fix**: something is broken and needs to be fixed in an existing file
-- A **feature / create**: a new file or section of code needs to be written
+You operate with two simultaneous mindsets:
 
-For either type, respond in EXACTLY this format (no markdown fences, no extra text before or after):
+FORWARD-DEPLOYED ENGINEER
+You are on the ground. You read everything — not just the obvious files. You do not wait for a perfect specification. You read between the lines, infer intent from context, and ship a solution. You handle every edge case, not just the happy path. You think about what breaks at 3am, what the junior engineer will misuse, what the input validation is missing, what happens when the data is null, empty, a duplicate, or malformed. You own the outcome entirely. If something needs to be created from scratch because it does not exist yet, you create it — you name the file, design the structure, define the interface. You treat the person who raised this issue like a customer standing in front of you who cannot ship until this is resolved.
+
+IMAGINEER
+You combine imagination with engineering precision. You do not only see what IS in the codebase — you see what SHOULD BE. You look at the existing files, understand their conventions, their naming patterns, their style, and you extend the system naturally. You design what is missing so it feels like it was always there. You think about the full user journey and the full data flow, not just the single line that triggered the report.
+
+---
+
+YOUR TASK
+Read the issue title and body. Read every file in the codebase provided. Then produce a complete, decisive, actionable fix plan.
+
+The issue will fall into one of these categories — you figure out which:
+- Bug in existing code → trace it to the exact line, explain why it is wrong, describe the precise fix
+- Missing feature or capability → decide what file to create, what to name it, design its full implementation
+- Incomplete placeholder → complete it properly with all required logic
+- Ambiguous complaint → infer the most likely root cause from the codebase and address it directly
+
+---
+
+NON-NEGOTIABLE RULES
+1. You ALWAYS produce a complete response. Returning empty is not an option. If you are uncertain, state your assumption and proceed with the most reasonable interpretation.
+2. You ALWAYS identify a specific file — an existing one to modify, or a new one to create with a concrete filename. UNKNOWN is only acceptable if you have exhausted all reasoning and genuinely cannot determine the file.
+3. Your Proposed Fix MUST be detailed enough that a junior engineer can implement it without asking a single follow-up question. Include function names, key logic, what to import, edge cases to handle.
+4. You account for edge cases in the fix — null inputs, empty collections, duplicate entries, concurrent access, invalid states.
+5. You respect the existing codebase's style, naming conventions, and patterns exactly.
+6. You MUST output all four header fields and the Reasoning section. No exceptions.
+
+---
+
+RESPOND IN EXACTLY THIS FORMAT (no markdown fences, no preamble, no sign-off):
 
 **Affected File:** `path/to/file.ext`
-**Line:** <line number where change starts, or 0 for new content>
-**Root Cause:** <one sentence — what is missing or broken>
-**Proposed Fix:** <specific and complete description of what to write or change>
+**Line:** <line number where the change starts, or 0 for a new file>
+**Root Cause:** <one sharp sentence — what is broken or absent and why it matters>
+**Proposed Fix:** <complete implementation description — function signatures, key logic, edge cases, imports needed>
 
 ## Reasoning
-<2-3 paragraphs explaining your approach>
-
-Rules:
-- If the issue asks to CREATE a new file, set Affected File to the path of that new file (e.g. `user-profile.html`)
-- If the issue asks to COMPLETE or FILL IN an existing placeholder file, set Affected File to that file's path
-- If you genuinely cannot determine the file, set Affected File to `UNKNOWN`
-- Never leave Proposed Fix empty — always describe the full change needed
-- You MUST output all four fields (**Affected File**, **Line**, **Root Cause**, **Proposed Fix**) and the ## Reasoning section"""
+<paragraph 1: how you read the codebase and what you found>
+<paragraph 2: why this is the correct file and approach>
+<paragraph 3: edge cases and failure modes you are accounting for>"""
 
 _STOP_WORDS = {
     "the", "a", "an", "is", "it", "in", "on", "at", "to", "for", "of", "and",
@@ -87,7 +108,7 @@ def _score_file(file_path: Path, keywords: list[str]) -> int:
     return score
 
 
-def search_codebase(workspace: str, keywords: list[str], max_files: int = 10) -> list[tuple[str, int, str]]:
+def search_codebase(workspace: str, keywords: list[str], max_files: int = 10, score_threshold: int = 1) -> list[tuple[str, int, str]]:
     """Returns list of (rel_path, score, content) sorted by relevance desc."""
     workspace_path = Path(workspace)
     candidates: list[tuple[Path, int]] = []
@@ -105,8 +126,8 @@ def search_codebase(workspace: str, keywords: list[str], max_files: int = 10) ->
         except OSError:
             continue
 
-        score = _score_file(file_path, keywords)
-        if score > 0:
+        score = _score_file(file_path, keywords) if keywords else 1
+        if score >= score_threshold:
             candidates.append((file_path, score))
 
     candidates.sort(key=lambda x: x[1], reverse=True)
@@ -128,34 +149,54 @@ def generate_plan(
     issue_title: str,
     issue_body: str,
     candidates: list[tuple[str, int, str]],
+    workspace: str = "",
 ) -> str:
     client = OpenAI(api_key=config.api_key, base_url=config.base_url)
 
-    file_sections = []
-    for rel_path, _score, content in candidates:
-        if len(content) > 6000:
-            content = content[:6000] + "\n... [truncated]"
-        file_sections.append(f"### `{rel_path}`\n```\n{content}\n```")
+    def _build_files_text(file_list: list[tuple[str, int, str]]) -> str:
+        sections = []
+        for rel_path, _score, content in file_list:
+            if len(content) > 6000:
+                content = content[:6000] + "\n... [truncated]"
+            sections.append(f"### `{rel_path}`\n```\n{content}\n```")
+        return "\n\n".join(sections) if sections else "No files found in the codebase."
 
-    files_text = "\n\n".join(file_sections) if file_sections else "No relevant files found in the codebase."
+    def _call(files_text: str, temperature: float) -> str:
+        user_message = (
+            f"## Issue Title\n{issue_title}\n\n"
+            f"## Issue Description\n{issue_body or '(no description provided)'}\n\n"
+            f"## Codebase Files\n\n{files_text}"
+        )
+        response = client.chat.completions.create(
+            model=config.model,
+            messages=[
+                {"role": "system", "content": PLAN_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=temperature,
+            max_tokens=3000,
+        )
+        return (response.choices[0].message.content or "").strip()
 
-    user_message = (
-        f"## Issue Title\n{issue_title}\n\n"
-        f"## Issue Description\n{issue_body or '(no description provided)'}\n\n"
-        f"## Relevant Files\n\n{files_text}"
-    )
+    # Attempt 1 — keyword-scored candidates
+    files_text = _build_files_text(candidates)
+    result = _call(files_text, temperature=0.2)
+    if result:
+        return result
 
-    response = client.chat.completions.create(
-        model=config.model,
-        messages=[
-            {"role": "system", "content": PLAN_SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        temperature=0.2,
-        max_tokens=2048,
-    )
+    # Attempt 2 — include ALL code files in the repo (no keyword filter)
+    # This handles feature requests where no existing file matches the keywords
+    if workspace:
+        all_files = search_codebase(workspace, keywords=[], max_files=15, score_threshold=0)
+        if all_files:
+            files_text = _build_files_text(all_files)
+            result = _call(files_text, temperature=0.3)
+            if result:
+                return result
 
-    return (response.choices[0].message.content or "").strip()
+    # Attempt 3 — issue only, no files, higher temperature, let the model decide from scratch
+    result = _call("No existing files were found. Design and create what is needed from scratch.", temperature=0.5)
+    return result
 
 
 def _extract_plan_fields(plan_text: str) -> tuple[str, int]:
@@ -225,7 +266,7 @@ def run_plan(
         }
 
     candidates = search_codebase(workspace, keywords)
-    plan_text = generate_plan(config, issue_title, issue_body, candidates)
+    plan_text = generate_plan(config, issue_title, issue_body, candidates, workspace=workspace)
 
     if not plan_text or not plan_text.strip():
         return {
