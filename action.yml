@@ -50,7 +50,7 @@ inputs:
     required: false
     default: ""
   mode:
-    description: "Action mode: 'scan' or 'fix'"
+    description: "Action mode: 'scan', 'fix', or 'plan'"
     required: false
     default: "scan"
   max_fixes:
@@ -77,6 +77,14 @@ inputs:
     description: "Run linter on generated fixes before creating PR (true/false)"
     required: false
     default: "true"
+  replan:
+    description: "Delete existing plan comment and regenerate (plan mode only)"
+    required: false
+    default: "false"
+  from_plan:
+    description: "Read fix details from plan comment instead of issue body (fix mode only)"
+    required: false
+    default: "false"
   email_notifications:
     description: "Enable email notifications (true/false)"
     required: false
@@ -175,7 +183,20 @@ runs:
         SENDER_EMAIL: ${{ inputs.sender_email }}
         RECIPIENT_EMAIL: ${{ inputs.recipient_email }}
       run: |
-        if [ "${{ inputs.mode }}" = "fix" ]; then
+        if [ "${{ inputs.mode }}" = "plan" ]; then
+          PLAN_ARGS=("plan" "--issue-number" "${{ inputs.issue_number }}")
+
+          if [ "${{ inputs.replan }}" = "true" ]; then
+            PLAN_ARGS+=("--replan")
+          fi
+
+          if [ "${{ inputs.config_file }}" != "" ]; then
+            PLAN_ARGS+=("--config" "${{ inputs.config_file }}")
+          fi
+
+          python -m repo_scanner.main "${PLAN_ARGS[@]}"
+
+        elif [ "${{ inputs.mode }}" = "fix" ]; then
           FIX_ARGS=("fix")
 
           if [ "${{ inputs.max_fixes }}" != "" ]; then
@@ -196,6 +217,10 @@ runs:
 
           if [ "${{ inputs.min_age_days }}" != "" ] && [ "${{ inputs.min_age_days }}" != "0" ]; then
             FIX_ARGS+=("--min-age-days" "${{ inputs.min_age_days }}")
+          fi
+
+          if [ "${{ inputs.from_plan }}" = "true" ]; then
+            FIX_ARGS+=("--from-plan")
           fi
 
           python -m repo_scanner.main "${FIX_ARGS[@]}"

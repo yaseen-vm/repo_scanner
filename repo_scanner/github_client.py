@@ -25,6 +25,14 @@ LABEL_DEFS = {
         "color": "e4e669",
         "description": "Auto-fix PR has been created",
     },
+    "plan": {"color": "7057ff", "description": "Trigger AI investigation and fix plan"},
+    "plan-ready": {"color": "008672", "description": "AI fix plan is ready for review"},
+    "approved": {"color": "0075ca", "description": "Fix plan approved — trigger auto-fix"},
+    "replan": {"color": "e4e669", "description": "Request a new AI fix plan"},
+    "needs-manual-review": {
+        "color": "b60205",
+        "description": "AI could not generate a plan — manual review needed",
+    },
 }
 
 
@@ -305,6 +313,55 @@ def close_resolved_issue(config: Config, issue_number: int, reason: str) -> bool
     except Exception as e:
         print(f"Failed to close resolved issue #{issue_number}: {e}")
         return False
+
+
+def post_issue_comment(config: Config, issue_number: int, body: str) -> str:
+    g = get_github_client(config)
+    repo = g.get_repo(config.repo)
+    issue = repo.get_issue(issue_number)
+    comment = issue.create_comment(body)
+    return comment.html_url
+
+
+def get_latest_plan_comment(config: Config, issue_number: int) -> dict | None:
+    """Return the most recent plan comment on an issue, or None."""
+    from .planner import PLAN_MARKER, parse_plan_comment
+
+    g = get_github_client(config)
+    repo = g.get_repo(config.repo)
+    issue = repo.get_issue(issue_number)
+
+    last = None
+    for comment in issue.get_comments():
+        if PLAN_MARKER in (comment.body or ""):
+            parsed = parse_plan_comment(comment.body)
+            if parsed:
+                last = {"id": comment.id, "body": comment.body, **parsed}
+    return last
+
+
+def delete_plan_comments(config: Config, issue_number: int) -> None:
+    """Delete all plan comments from an issue."""
+    from .planner import PLAN_MARKER
+
+    g = get_github_client(config)
+    repo = g.get_repo(config.repo)
+    issue = repo.get_issue(issue_number)
+
+    for comment in issue.get_comments():
+        if PLAN_MARKER in (comment.body or ""):
+            comment.delete()
+
+
+def swap_label(config: Config, issue_number: int, remove: str, add: str) -> None:
+    g = get_github_client(config)
+    repo = g.get_repo(config.repo)
+    issue = repo.get_issue(issue_number)
+    try:
+        issue.remove_from_labels(remove)
+    except Exception:
+        pass
+    issue.add_to_labels(add)
 
 
 def get_pr_number_from_event(event_path: str) -> int | None:

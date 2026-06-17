@@ -8,16 +8,20 @@ from rich.table import Table
 
 from .analyzer import analyze_files, filter_by_threshold
 from .config import Config
-from .fixer import FixResult, run_fixes
+from .fixer import FixResult, fix_from_plan_comment, run_fixes
 from .github_client import (
     close_duplicate_issue,
     close_resolved_issue,
     create_issue,
+    delete_plan_comments,
     ensure_labels,
     find_duplicate_issues,
     get_existing_issue_titles,
+    get_latest_plan_comment,
     get_pr_number_from_event,
+    post_issue_comment,
     post_pr_comment,
+    swap_label,
 )
 from .reporter import (
     build_pr_summary,
@@ -272,6 +276,98 @@ def scan(
 
 @cli.command()
 @click.option("--config", "-c", default=None, help="Path to config YAML file")
+@click.option("--issue-number", required=True, type=int, help="GitHub issue number to investigate")
+@click.option("--replan", is_flag=True, default=False, help="Delete old plan and regenerate")
+@click.pass_context
+def plan(ctx, config, issue_number, replan):
+    """Investigate a GitHub issue and post an AI fix plan as a comment."""
+    from github import Github
+    from .planner import run_plan, MAX_REPLAN_ATTEMPTS
+
+    cfg = Config.from_env_and_file(config)
+    _require_api_key(cfg)
+    _require_repo(cfg)
+
+    if not cfg.github_token:
+        console.print("[red]Error: No GitHub token. Use GITHUB_TOKEN env var.[/red]")
+        sys.exit(1)
+
+    workspace = cfg.workspace or str(Path.cwd())
+
+    g = Github(cfg.github_token)
+    repo = g.get_repo(cfg.repo)
+    gh_issue = repo.get_issue(issue_number)
+
+    replans = 0
+
+    if replan:
+        existing = get_latest_plan_comment(cfg, issue_number)
+        if existing:
+            replans = existing["replans"] + 1
+            if replans >= MAX_REPLAN_ATTEMPTS:
+                post_issue_comment(
+                    cfg,
+                    issue_number,
+                    f"⚠️ **Maximum replan attempts reached ({MAX_REPLAN_ATTEMPTS}).**\n\n"
+                    f"The AI was unable to generate a satisfactory plan automatically.\n\n"
+                    f"To try again, add more detail to the issue — for example:\n"
+                    f"- The file path where the bug occurs: `**File:** \\`path/to/file.py:42\\``\n"
+                    f"- The exact error message\n"
+                    f"- Steps to reproduce\n\n"
+                    f"Then add the `plan` label.",
+                )
+                swap_label(cfg, issue_number, "replan", "needs-manual-review")
+                console.print(f"[red]Max replans reached for issue #{issue_number}. Stopping.[/red]")
+                return
+            delete_plan_comments(cfg, issue_number)
+        swap_label(cfg, issue_number, "replan", "plan-ready")
+
+    console.print(f"[bold]Planning fix for issue #{issue_number}:[/bold] {gh_issue.title}")
+    console.print(f"  Searching codebase and generating plan (replan #{replans})..." if replans else "  Searching codebase and generating plan...")
+
+    result = run_plan(
+        cfg,
+        issue_title=gh_issue.title,
+        issue_body=gh_issue.body or "",
+        workspace=workspace,
+        replans=replans,
+    )
+
+    if not result["success"]:
+        post_issue_comment(
+            cfg,
+            issue_number,
+            f"⚠️ **Could not generate a plan:** {result['error']}\n\n"
+            f"Please add more context to the issue (e.g., file path, error message, "
+            f"steps to reproduce) and add the `plan` label to try again.",
+        )
+        swap_label(cfg, issue_number, "plan", "needs-manual-review")
+        console.print(f"[red]Planning failed: {result['error']}[/red]")
+        sys.exit(1)
+
+    try:
+        ensure_labels(cfg)
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not ensure labels: {e}[/yellow]")
+
+    comment_url = post_issue_comment(cfg, issue_number, result["plan_comment"])
+
+    remove_label = "replan" if replan else "plan"
+    swap_label(cfg, issue_number, remove_label, "plan-ready")
+
+    console.print(f"[green]Plan posted: {comment_url}[/green]")
+    console.print(f"  Identified file: {result['file']}:{result['line']}")
+
+    github_output = os.environ.get("GITHUB_OUTPUT", "")
+    if github_output:
+        with open(github_output, "a") as f:
+            f.write(f"plan_file={result['file']}\n")
+            f.write(f"plan_line={result['line']}\n")
+            f.write(f"comment_url={comment_url}\n")
+
+
+@cli.command()
+@click.option("--config", "-c", default=None, help="Path to config YAML file")
 @click.option(
     "--max-fixes",
     default=None,
@@ -296,8 +392,14 @@ def scan(
     type=int,
     help="Only fix issues older than this many days (0 = no limit)",
 )
+@click.option(
+    "--from-plan",
+    is_flag=True,
+    default=False,
+    help="Read fix details from plan comment instead of issue body",
+)
 @click.pass_context
-def fix(ctx, config, max_fixes, severity, issue_number, min_age_days):
+def fix(ctx, config, max_fixes, severity, issue_number, min_age_days, from_plan):
     """Auto-fix scanner issues and create PRs."""
     cfg = Config.from_env_and_file(config)
 
@@ -310,12 +412,32 @@ def fix(ctx, config, max_fixes, severity, issue_number, min_age_days):
         )
         sys.exit(1)
 
+    workspace = cfg.workspace or str(Path.cwd())
+
+    if from_plan:
+        if not issue_number:
+            console.print("[red]--from-plan requires --issue-number[/red]")
+            sys.exit(1)
+        console.print(f"[bold]Repo Scanner Fix (from plan)[/bold] — Issue #{issue_number} in {cfg.repo}")
+        result = fix_from_plan_comment(cfg, issue_number, workspace)
+        if result.success:
+            console.print(f"[green]Fix PR created: {result.pr_url}[/green]")
+        else:
+            console.print(f"[red]Fix failed: {result.error}[/red]")
+        github_output = os.environ.get("GITHUB_OUTPUT", "")
+        if github_output:
+            with open(github_output, "a") as f:
+                f.write(f"fixes_created={'1' if result.success else '0'}\n")
+                f.write(f"pr_urls={result.pr_url if result.success else ''}\n")
+        if not result.success:
+            sys.exit(1)
+        return
+
     effective_max = (
         1
         if issue_number is not None
         else (max_fixes if max_fixes is not None else cfg.max_fixes)
     )
-    workspace = cfg.workspace or str(Path.cwd())
 
     console.print(f"[bold]Repo Scanner Fix[/bold] — Fixing issues in {cfg.repo}")
     console.print(

@@ -294,6 +294,91 @@ def apply_fix_and_create_pr(
         raise
 
 
+def fix_from_plan_comment(
+    config: Config,
+    issue_number: int,
+    workspace: str,
+) -> FixResult:
+    """Fix a GitHub issue using the plan posted as a comment."""
+    from github import Github
+    from .github_client import get_latest_plan_comment
+    from .planner import extract_fix_fields
+
+    plan_data = get_latest_plan_comment(config, issue_number)
+    if not plan_data:
+        return FixResult(
+            issue_number=issue_number,
+            issue_title=f"Issue #{issue_number}",
+            success=False,
+            error="No plan comment found. Add the 'plan' label first to generate a plan.",
+        )
+
+    g = Github(config.github_token)
+    repo = g.get_repo(config.repo)
+    gh_issue = repo.get_issue(issue_number)
+
+    file_path_str = plan_data["file"]
+    if not file_path_str or file_path_str == "UNKNOWN":
+        return FixResult(
+            issue_number=issue_number,
+            issue_title=gh_issue.title,
+            success=False,
+            error="Plan did not identify a specific file. Add the 'replan' label to try again.",
+        )
+
+    file_path = Path(workspace) / file_path_str
+    if not file_path.exists():
+        return FixResult(
+            issue_number=issue_number,
+            issue_title=gh_issue.title,
+            success=False,
+            error=f"File not found: {file_path_str}",
+        )
+
+    if _is_binary(file_path):
+        return FixResult(
+            issue_number=issue_number,
+            issue_title=gh_issue.title,
+            success=False,
+            error="File is binary — cannot auto-fix.",
+        )
+
+    description, suggestion = extract_fix_fields(plan_data["body"])
+    issue_dict = {
+        "number": issue_number,
+        "title": gh_issue.title,
+        "body": f"## Description\n{description}\n\n## Suggested Fix\n{suggestion}",
+        "file": file_path_str,
+        "severity": "medium",
+    }
+
+    try:
+        file_content = file_path.read_text(encoding="utf-8")
+        fix_content = generate_fix(config, file_content, issue_dict)
+        if not fix_content or fix_content == file_content:
+            return FixResult(
+                issue_number=issue_number,
+                issue_title=gh_issue.title,
+                success=False,
+                error="LLM returned unchanged or empty content.",
+            )
+
+        pr_url = apply_fix_and_create_pr(config, issue_dict, fix_content, workspace)
+        return FixResult(
+            issue_number=issue_number,
+            issue_title=gh_issue.title,
+            success=True,
+            pr_url=pr_url,
+        )
+    except Exception as e:
+        return FixResult(
+            issue_number=issue_number,
+            issue_title=gh_issue.title,
+            success=False,
+            error=str(e),
+        )
+
+
 def run_fixes(
     config: Config,
     max_fixes: int,

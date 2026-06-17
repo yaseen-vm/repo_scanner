@@ -1,0 +1,102 @@
+name: Apply Fix on Approval Label
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  fix-from-plan:
+    # Fires when 'approved' is added to an issue that has a plan-ready label
+    if: |
+      github.event.label.name == 'approved' &&
+      github.event.issue.state == 'open' &&
+      contains(toJson(github.event.issue.labels), 'plan-ready')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Mark as fix-in-progress
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue.number;
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              name: 'approved'
+            }).catch(() => {});
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              name: 'plan-ready'
+            }).catch(() => {});
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              labels: ['fix-in-progress']
+            });
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "repo-scanner[bot]"
+          git config user.email "repo-scanner[bot]@users.noreply.github.com"
+
+      - name: Apply Fix from Plan
+        uses: ./
+        id: fix
+        with:
+          mimo_api_key: ${{ secrets.MIMO_API_KEY || secrets.LLM_API_KEY }}
+          llm_base_url: ${{ secrets.LLM_BASE_URL || 'https://api.xiaomimimo.com/v1' }}
+          llm_model: ${{ secrets.LLM_MODEL || 'mimo-v2.5-pro' }}
+          mode: fix
+          issue_number: ${{ github.event.issue.number }}
+          from_plan: "true"
+
+      - name: Post result and update label
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const issue = context.payload.issue.number;
+            const prUrls = '${{ steps.fix.outputs.pr_urls }}';
+
+            if (prUrls) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue,
+                body: `🤖 Fix PR created: ${prUrls}\n\nReview and merge to close this issue.`
+              });
+            } else {
+              // Fix failed — restore plan-ready so the user can retry
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue,
+                name: 'fix-in-progress'
+              }).catch(() => {});
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue,
+                labels: ['plan-ready']
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue,
+                body: `⚠️ Could not apply the fix. [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.\n\nAdd \`approved\` to retry, or \`replan\` to generate a new plan.`
+              });
+            }
