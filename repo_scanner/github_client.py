@@ -33,6 +33,10 @@ LABEL_DEFS = {
         "color": "b60205",
         "description": "AI could not generate a plan — manual review needed",
     },
+    "fix-rejected": {
+        "color": "b60205",
+        "description": "Auto-fix PR was closed without merging",
+    },
 }
 
 

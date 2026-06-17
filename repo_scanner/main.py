@@ -6,6 +6,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from . import analyzer as _analyzer_module
 from .analyzer import analyze_files, filter_by_threshold
 from .config import Config
 from .fixer import FixResult, fix_from_plan_comment, run_fixes
@@ -187,12 +188,21 @@ def scan(
 
     console.print(f"  Analyzing {len(files)} file(s)...")
 
+    _analyzer_module.clear_skipped_batches()
     all_issues = analyze_files(files, cfg)
     issues = filter_by_threshold(all_issues, cfg)
 
     console.print(
         f"  Found {len(all_issues)} total issues, {len(issues)} above threshold"
     )
+
+    # GAP 7: Surface rate-limit skipped batches as warnings
+    skipped = _analyzer_module.get_skipped_batches()
+    if skipped:
+        console.print(
+            f"[yellow]WARNING: {len(skipped)} batch(es) were skipped due to rate limiting "
+            f"and were NOT analyzed: {', '.join(skipped)}[/yellow]"
+        )
 
     created_urls = []
     if create_issues and cfg.github_token:
@@ -254,6 +264,15 @@ def scan(
                 console.print(f"    [red]Failed to post comment: {e}[/red]")
 
     md_report = generate_markdown_report(issues, cfg.repo, cfg.sha)
+    # GAP 7: Append skipped-batch warning section to report
+    if skipped:
+        md_report += (
+            "\n\n## ⚠️ Rate-Limit Warning\n\n"
+            f"The following {len(skipped)} batch(es) were skipped due to API rate limiting "
+            f"and were **NOT analyzed**:\n\n"
+            + "\n".join(f"- `{b}`" for b in skipped)
+            + "\n\nRe-run the scan to include these files."
+        )
     save_report(md_report, output)
     console.print(f"  Report saved to {output}")
 
@@ -325,38 +344,58 @@ def plan(ctx, config, issue_number, replan):
     console.print(f"[bold]Planning fix for issue #{issue_number}:[/bold] {gh_issue.title}")
     console.print(f"  Searching codebase and generating plan (replan #{replans})..." if replans else "  Searching codebase and generating plan...")
 
-    result = run_plan(
-        cfg,
-        issue_title=gh_issue.title,
-        issue_body=gh_issue.body or "",
-        workspace=workspace,
-        replans=replans,
-    )
-
-    if not result["success"]:
-        post_issue_comment(
-            cfg,
-            issue_number,
-            f"⚠️ **Could not generate a plan:** {result['error']}\n\n"
-            f"Please add more context to the issue (e.g., file path, error message, "
-            f"steps to reproduce) and add the `plan` label to try again.",
-        )
-        swap_label(cfg, issue_number, "plan", "needs-manual-review")
-        console.print(f"[red]Planning failed: {result['error']}[/red]")
-        sys.exit(1)
-
+    # GAP 9: Wrap core plan logic in try/finally to ensure label cleanup on crash
+    label_swapped = False
     try:
-        ensure_labels(cfg)
+        result = run_plan(
+            cfg,
+            issue_title=gh_issue.title,
+            issue_body=gh_issue.body or "",
+            workspace=workspace,
+            replans=replans,
+        )
+
+        if not result["success"]:
+            post_issue_comment(
+                cfg,
+                issue_number,
+                f"⚠️ **Could not generate a plan:** {result['error']}\n\n"
+                f"Please add more context to the issue (e.g., file path, error message, "
+                f"steps to reproduce) and add the `plan` label to try again.",
+            )
+            swap_label(cfg, issue_number, "plan", "needs-manual-review")
+            label_swapped = True
+            console.print(f"[red]Planning failed: {result['error']}[/red]")
+            sys.exit(1)
+
+        try:
+            ensure_labels(cfg)
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not ensure labels: {e}[/yellow]")
+
+        comment_url = post_issue_comment(cfg, issue_number, result["plan_comment"])
+
+        remove_label = "replan" if replan else "plan"
+        swap_label(cfg, issue_number, remove_label, "plan-ready")
+        label_swapped = True
+
+        console.print(f"[green]Plan posted: {comment_url}[/green]")
+        console.print(f"  Identified file: {result['file']}:{result['line']}")
+
+    except SystemExit:
+        raise
     except Exception as e:
-        console.print(f"[yellow]Warning: Could not ensure labels: {e}[/yellow]")
-
-    comment_url = post_issue_comment(cfg, issue_number, result["plan_comment"])
-
-    remove_label = "replan" if replan else "plan"
-    swap_label(cfg, issue_number, remove_label, "plan-ready")
-
-    console.print(f"[green]Plan posted: {comment_url}[/green]")
-    console.print(f"  Identified file: {result['file']}:{result['line']}")
+        if not label_swapped:
+            try:
+                swap_label(cfg, issue_number, "replan" if replan else "plan", "needs-manual-review")
+                post_issue_comment(
+                    cfg,
+                    issue_number,
+                    f"⚠️ Planning failed with an unexpected error: {e}\n\nAdd the `plan` label to retry.",
+                )
+            except Exception:
+                pass
+        raise
 
     github_output = os.environ.get("GITHUB_OUTPUT", "")
     if github_output:
