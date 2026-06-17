@@ -271,10 +271,11 @@ runs:
           if [ "${{ inputs.sarif_output }}" = "true" ]; then
             echo "sarif_path=/tmp/repo-scanner-results.sarif" >> "$GITHUB_OUTPUT"
           fi
+        fi
 
     - name: Upload SARIF
       uses: github/codeql-action/upload-sarif@v3
-      if: inputs.sarif_output == 'true' && always()
+      if: inputs.sarif_output == 'true' && inputs.mode == 'scan'
       with:
         sarif_file: /tmp/repo-scanner-results.sarif
 
