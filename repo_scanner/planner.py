@@ -108,8 +108,43 @@ def _score_file(file_path: Path, keywords: list[str]) -> int:
     return score
 
 
+def _extract_imports(content: str, file_path: Path) -> list[str]:
+    """GAP 2: Extract imported module names from a source file."""
+    imports: list[str] = []
+    ext = file_path.suffix.lower()
+    if ext == ".py":
+        for m in re.finditer(r'^from\s+(\S+)\s+import', content, re.MULTILINE):
+            imports.append(m.group(1))
+        for m in re.finditer(r'^import\s+(\S+)', content, re.MULTILINE):
+            imports.append(m.group(1).split(".")[0])
+    elif ext in {".js", ".ts", ".jsx", ".tsx", ".mjs"}:
+        for m in re.finditer(r'''from\s+['"]([^'"]+)['"]''', content):
+            imports.append(m.group(1))
+        for m in re.finditer(r'''require\s*\(\s*['"]([^'"]+)['"]\s*\)''', content):
+            imports.append(m.group(1))
+    return imports
+
+
+def _resolve_import_to_file(module: str, workspace_path: Path) -> Path | None:
+    """GAP 2: Try to resolve an import module name to an actual file in workspace."""
+    # Convert dots/slashes to path separators
+    candidate_base = module.replace(".", "/").replace("\\", "/").lstrip("/")
+    # Try various extensions
+    for ext in (".py", ".ts", ".js", ".tsx", ".jsx"):
+        candidate = workspace_path / (candidate_base + ext)
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    # Try as directory with __init__.py (Python packages)
+    candidate = workspace_path / candidate_base / "__init__.py"
+    if candidate.exists() and candidate.is_file():
+        return candidate
+    return None
+
+
 def search_codebase(workspace: str, keywords: list[str], max_files: int = 10, score_threshold: int = 1) -> list[tuple[str, int, str]]:
-    """Returns list of (rel_path, score, content) sorted by relevance desc."""
+    """Returns list of (rel_path, score, content) sorted by relevance desc.
+    GAP 2: Also performs a second pass of import-graph traversal to include
+    imported files that may not be keyword-rich themselves."""
     workspace_path = Path(workspace)
     candidates: list[tuple[Path, int]] = []
 
@@ -132,8 +167,36 @@ def search_codebase(workspace: str, keywords: list[str], max_files: int = 10, sc
 
     candidates.sort(key=lambda x: x[1], reverse=True)
 
-    result: list[tuple[str, int, str]] = []
+    # GAP 2: Import-graph traversal — include files imported by top candidates
+    candidate_paths = {fp for fp, _ in candidates}
+    max_importer_score = candidates[0][1] if candidates else 1
+    import_additions: list[tuple[Path, int]] = []
+
     for file_path, score in candidates[:max_files]:
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for module_name in _extract_imports(content, file_path):
+            resolved = _resolve_import_to_file(module_name, workspace_path)
+            if resolved is None:
+                continue
+            if resolved in candidate_paths:
+                continue
+            # Skip files already queued for addition
+            if any(fp == resolved for fp, _ in import_additions):
+                continue
+            # Add with half the max importer score so it ranks after keyword matches
+            import_score = max(1, max_importer_score // 2)
+            import_additions.append((resolved, import_score))
+            candidate_paths.add(resolved)
+
+    all_candidates = candidates + import_additions
+    all_candidates.sort(key=lambda x: x[1], reverse=True)
+
+    # Cap final list at 12
+    result: list[tuple[str, int, str]] = []
+    for file_path, score in all_candidates[:12]:
         try:
             content = file_path.read_text(encoding="utf-8", errors="ignore")
             rel_path = str(file_path.relative_to(workspace_path))

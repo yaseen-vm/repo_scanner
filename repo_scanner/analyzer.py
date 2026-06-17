@@ -1,6 +1,9 @@
 import json
+import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from openai import OpenAI
 from openai import AuthenticationError, RateLimitError
@@ -8,6 +11,20 @@ from openai import AuthenticationError, RateLimitError
 from .config import Config
 from .notifications import notify_token_expired, notify_token_exhausted
 from .scanner import FileChange
+
+# GAP 7: Track rate-limit skipped batches with thread safety
+_skipped_batches: list[str] = []
+_skipped_batches_lock = threading.Lock()
+
+
+def get_skipped_batches() -> list[str]:
+    with _skipped_batches_lock:
+        return list(_skipped_batches)
+
+
+def clear_skipped_batches() -> None:
+    with _skipped_batches_lock:
+        _skipped_batches.clear()
 
 RESPONSE_FORMAT = """For each issue found, respond with a JSON array of objects:
 ```json
@@ -152,6 +169,10 @@ def _analyze_category(
             error_msg = str(e)
             print(f"Rate limit error ({category}): {error_msg}")
             notify_token_exhausted(config, error_msg)
+            # GAP 7: Track skipped batch for surface-level warning
+            batch_label = f"{category}:batch{i // batch_size + 1}"
+            with _skipped_batches_lock:
+                _skipped_batches.append(batch_label)
             continue
         except json.JSONDecodeError:
             continue
@@ -161,26 +182,38 @@ def _analyze_category(
     return all_issues
 
 
+def _normalize_title(title: str) -> str:
+    """Lowercase and strip punctuation for fuzzy title comparison (GAP 5)."""
+    return re.sub(r"[^a-z0-9 ]", "", title.lower()).strip()
+
+
 def _deduplicate(issues: list[Issue]) -> list[Issue]:
-    seen: dict[tuple[str, int], Issue] = {}
+    """GAP 5: Deduplicate by (file, normalized_title) similarity instead of (file, line)."""
+    deduped: list[Issue] = []
+
     for issue in issues:
-        key = (issue.file, issue.line)
-        if key in seen:
-            existing = seen[key]
-            existing_rank = SEVERITY_RANK.get(existing.severity, 0)
-            new_rank = SEVERITY_RANK.get(issue.severity, 0)
-            if new_rank > existing_rank:
-                issue.description = f"{issue.description}\n\n{existing.description}"
-                seen[key] = issue
-            elif new_rank == existing_rank and issue.category != existing.category:
-                existing.description = f"{existing.description}\n\n{issue.description}"
+        norm_title = _normalize_title(issue.title)
+        merged = False
+        for existing in deduped:
+            if existing.file != issue.file:
+                continue
+            norm_existing = _normalize_title(existing.title)
+            ratio = SequenceMatcher(None, norm_title, norm_existing).ratio()
+            if ratio >= 0.75:
+                # Same issue — merge: keep higher severity, combine descriptions
+                existing_rank = SEVERITY_RANK.get(existing.severity, 0)
+                new_rank = SEVERITY_RANK.get(issue.severity, 0)
+                if new_rank > existing_rank:
+                    existing.severity = issue.severity
+                existing.description = f"{existing.description}\n\n{issue.description}".strip()
                 if issue.category not in existing.category:
                     existing.category = f"{existing.category},{issue.category}"
-            else:
-                existing.description = f"{existing.description}\n\n{issue.description}"
-        else:
-            seen[key] = issue
-    return list(seen.values())
+                merged = True
+                break
+        if not merged:
+            deduped.append(issue)
+
+    return deduped
 
 
 def analyze_files(files: list[FileChange], config: Config) -> list[Issue]:

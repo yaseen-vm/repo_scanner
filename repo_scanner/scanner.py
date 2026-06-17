@@ -176,9 +176,67 @@ def get_changed_files_from_event(event_path: str, workspace: str) -> list[FileCh
     return files
 
 
+_HIGH_RISK_DIRS = {
+    "api", "auth", "payment", "security", "login", "admin",
+    "oauth", "webhook", "route", "controller", "handler", "middleware",
+}
+
+_LOW_PRIORITY_DIRS = {
+    "test", "spec", "mock", "fixture", "vendor", "generated", "migrations",
+}
+
+
+def _get_recently_changed_files(workspace: str) -> set[str]:
+    """GAP 6: Get set of recently changed file paths from git log."""
+    try:
+        result = subprocess.run(
+            ["git", "log", "--name-only", "--pretty=format:", "-n", "50"],
+            capture_output=True,
+            text=True,
+            cwd=workspace,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            paths = set()
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    paths.add(line.replace("\\", "/"))
+            return paths
+    except Exception:
+        pass
+    return set()
+
+
+def _priority_score(relative: str, recent_files: set[str]) -> int:
+    """GAP 6: Compute priority score for a file path."""
+    score = 0
+    rel_lower = relative.lower()
+
+    # +10 for recently changed files
+    if relative in recent_files:
+        score += 10
+
+    # +5 for high-risk directories
+    parts = rel_lower.replace("\\", "/").split("/")
+    for part in parts:
+        if any(risk in part for risk in _HIGH_RISK_DIRS):
+            score += 5
+            break
+
+    # +2 for files NOT in low-priority directories
+    in_low_priority = any(
+        any(lp in part for lp in _LOW_PRIORITY_DIRS) for part in parts
+    )
+    if not in_low_priority:
+        score += 2
+
+    return score
+
+
 def scan_files(workspace: str, config: Config) -> list[FileChange]:
-    files: list[FileChange] = []
     workspace_path = Path(workspace)
+    candidates: list[tuple[str, str]] = []  # (relative_path, content)
 
     for file_path in workspace_path.rglob("*"):
         if not file_path.is_file():
@@ -197,20 +255,25 @@ def scan_files(workspace: str, config: Config) -> list[FileChange]:
 
         try:
             content = file_path.read_text(encoding="utf-8", errors="ignore")
-            files.append(
-                FileChange(
-                    path=relative,
-                    content=content,
-                    diff="",
-                    language=detect_language(relative),
-                    additions=0,
-                    deletions=0,
-                )
-            )
+            candidates.append((relative, content))
         except Exception:
             continue
 
-        if len(files) >= config.max_files:
-            break
+    # GAP 6: Sort candidates by priority score before taking max_files
+    recent_files = _get_recently_changed_files(workspace)
+    candidates.sort(key=lambda x: _priority_score(x[0], recent_files), reverse=True)
+
+    files: list[FileChange] = []
+    for relative, content in candidates[: config.max_files]:
+        files.append(
+            FileChange(
+                path=relative,
+                content=content,
+                diff="",
+                language=detect_language(relative),
+                additions=0,
+                deletions=0,
+            )
+        )
 
     return files
