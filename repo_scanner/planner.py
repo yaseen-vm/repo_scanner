@@ -8,25 +8,29 @@ from .config import Config
 PLAN_MARKER = "repo-scanner-plan-v1"
 MAX_REPLAN_ATTEMPTS = 3
 
-PLAN_SYSTEM_PROMPT = """You are a senior software engineer investigating a GitHub issue report.
+PLAN_SYSTEM_PROMPT = """You are a senior software engineer acting on a GitHub issue report.
 You will be given the issue title, issue body, and contents of relevant files from the codebase.
 
-Your task:
-1. Identify which file and line number contains the root cause
-2. Explain the root cause clearly and concisely
-3. Propose a specific, actionable fix
+The issue may be one of two types:
+- A **bug fix**: something is broken and needs to be fixed in an existing file
+- A **feature / create**: a new file or section of code needs to be written
 
-Respond in EXACTLY this format (no markdown fences, no extra text before or after):
+For either type, respond in EXACTLY this format (no markdown fences, no extra text before or after):
 
-**Affected File:** `path/to/file.py`
-**Line:** <line number, or 0 if unknown>
-**Root Cause:** <one sentence describing the problem>
-**Proposed Fix:** <specific change to make>
+**Affected File:** `path/to/file.ext`
+**Line:** <line number where change starts, or 0 for new content>
+**Root Cause:** <one sentence — what is missing or broken>
+**Proposed Fix:** <specific and complete description of what to write or change>
 
 ## Reasoning
-<2-3 paragraphs tracing how you found the issue in the codebase>
+<2-3 paragraphs explaining your approach>
 
-If you cannot identify the affected file with confidence, set Affected File to `UNKNOWN` and explain why in Reasoning."""
+Rules:
+- If the issue asks to CREATE a new file, set Affected File to the path of that new file (e.g. `user-profile.html`)
+- If the issue asks to COMPLETE or FILL IN an existing placeholder file, set Affected File to that file's path
+- If you genuinely cannot determine the file, set Affected File to `UNKNOWN`
+- Never leave Proposed Fix empty — always describe the full change needed
+- You MUST output all four fields (**Affected File**, **Line**, **Root Cause**, **Proposed Fix**) and the ## Reasoning section"""
 
 _STOP_WORDS = {
     "the", "a", "an", "is", "it", "in", "on", "at", "to", "for", "of", "and",
@@ -222,6 +226,16 @@ def run_plan(
 
     candidates = search_codebase(workspace, keywords)
     plan_text = generate_plan(config, issue_title, issue_body, candidates)
+
+    if not plan_text or not plan_text.strip():
+        return {
+            "success": False,
+            "error": "The AI returned an empty response. The model may not have understood the request. Try adding more detail to the issue body (e.g. the target file path, error message, or exact requirements).",
+            "plan_comment": "",
+            "file": "",
+            "line": 0,
+        }
+
     file_path, line = _extract_plan_fields(plan_text)
     plan_comment = build_plan_comment(plan_text, replans, file_path, line)
 
