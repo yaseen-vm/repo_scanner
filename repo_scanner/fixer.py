@@ -266,7 +266,7 @@ def apply_fix_and_create_pr(
         if result.returncode != 0:
             raise RuntimeError(f"git commit failed: {result.stderr}")
 
-        result = _run_git(["push", "origin", branch_name], cwd=workspace)
+        result = _run_git(["push", "--force", "origin", branch_name], cwd=workspace)
         if result.returncode != 0:
             raise RuntimeError(f"git push failed: {result.stderr}")
 
