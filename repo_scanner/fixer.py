@@ -74,6 +74,8 @@ def validate_fix(file_path: Path, language: str) -> tuple[bool, str]:
 
 FIX_SYSTEM_PROMPT = """You are a surgical code fixer. You will be given a WINDOW of lines from a file and an issue to fix. Return ONLY the fixed version of that window — the exact same number of context lines with the bug fixed. Preserve indentation and style exactly. Return raw code only, no fences, no explanation."""
 
+CREATE_FILE_SYSTEM_PROMPT = """You are a code generator. You will be given an issue title and description asking you to create a new file. Generate the complete contents of that file. Return ONLY the raw file content — no markdown fences, no explanation."""
+
 
 @dataclass
 class FixResult:
@@ -205,6 +207,38 @@ def generate_fix(config: Config, file_content: str, issue: dict) -> str:
 
     spliced = all_lines[:window_start] + fixed_window_lines + all_lines[window_start + window_size:]
     return "".join(spliced)
+
+
+def generate_new_file(config: Config, issue: dict) -> str:
+    """Generate content for a file that does not yet exist."""
+    client = OpenAI(api_key=config.api_key, base_url=config.base_url)
+    fields = parse_issue_fields(issue["body"])
+    user_message = (
+        f"File to create: {issue['file']}\n"
+        f"Issue: {issue['title']}\n"
+        f"Description: {fields['description']}\n"
+        f"Suggested content: {fields['suggestion']}\n\n"
+        f"Generate the complete contents of this new file."
+    )
+    response = client.chat.completions.create(
+        model=config.model,
+        messages=[
+            {"role": "system", "content": CREATE_FILE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=0.1,
+        max_tokens=8192,
+    )
+    content = response.choices[0].message.content or ""
+    content = content.strip()
+    if content.startswith("```"):
+        first_newline = content.find("\n")
+        if first_newline != -1:
+            content = content[first_newline + 1:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+    return content
 
 
 def _slugify(text: str, max_len: int = 40) -> str:
@@ -520,22 +554,6 @@ def fix_from_plan_comment(
         )
 
     file_path = Path(workspace) / file_path_str
-    if not file_path.exists():
-        return FixResult(
-            issue_number=issue_number,
-            issue_title=gh_issue.title,
-            success=False,
-            error=f"File not found: {file_path_str}",
-        )
-
-    if _is_binary(file_path):
-        return FixResult(
-            issue_number=issue_number,
-            issue_title=gh_issue.title,
-            success=False,
-            error="File is binary — cannot auto-fix.",
-        )
-
     description, suggestion = extract_fix_fields(plan_data["body"])
     plan_line = plan_data.get("line", 0)
     issue_dict = {
@@ -546,6 +564,40 @@ def fix_from_plan_comment(
         "severity": "medium",
         "line": plan_line,
     }
+
+    if not file_path.exists():
+        # File doesn't exist — generate and create it
+        try:
+            new_content = generate_new_file(config, issue_dict)
+            if not new_content:
+                return FixResult(
+                    issue_number=issue_number,
+                    issue_title=gh_issue.title,
+                    success=False,
+                    error=f"LLM returned empty content for new file: {file_path_str}",
+                )
+            pr_url = apply_fix_and_create_pr(config, issue_dict, new_content, workspace)
+            return FixResult(
+                issue_number=issue_number,
+                issue_title=gh_issue.title,
+                success=True,
+                pr_url=pr_url,
+            )
+        except Exception as e:
+            return FixResult(
+                issue_number=issue_number,
+                issue_title=gh_issue.title,
+                success=False,
+                error=str(e),
+            )
+
+    if _is_binary(file_path):
+        return FixResult(
+            issue_number=issue_number,
+            issue_title=gh_issue.title,
+            success=False,
+            error="File is binary — cannot auto-fix.",
+        )
 
     # GAP 8: Check for stale line before attempting fix
     if plan_line > 0:
@@ -636,14 +688,37 @@ def run_fixes(
                     )
                 )
             else:
-                results.append(
-                    FixResult(
-                        issue_number=issue["number"],
-                        issue_title=issue["title"],
-                        success=False,
-                        error=f"File not found: {issue['file']}",
+                # File doesn't exist — generate and create it
+                try:
+                    new_content = generate_new_file(config, issue)
+                    if not new_content:
+                        results.append(
+                            FixResult(
+                                issue_number=issue["number"],
+                                issue_title=issue["title"],
+                                success=False,
+                                error=f"LLM returned empty content for new file: {issue['file']}",
+                            )
+                        )
+                        continue
+                    pr_url = apply_fix_and_create_pr(config, issue, new_content, workspace)
+                    results.append(
+                        FixResult(
+                            issue_number=issue["number"],
+                            issue_title=issue["title"],
+                            success=True,
+                            pr_url=pr_url,
+                        )
                     )
-                )
+                except Exception as e:
+                    results.append(
+                        FixResult(
+                            issue_number=issue["number"],
+                            issue_title=issue["title"],
+                            success=False,
+                            error=str(e),
+                        )
+                    )
             continue
 
         if _is_binary(file_path):
