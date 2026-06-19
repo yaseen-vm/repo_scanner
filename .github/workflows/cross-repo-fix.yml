@@ -1,0 +1,294 @@
+name: Cross-Repo Fix on Label
+
+# Triggered when you add the 'cross-repo-fix' label to any open issue.
+# Comment a GitHub issue URL on the issue first, e.g.:
+#   https://github.com/some-org/some-repo/issues/42
+# Then add the label. This workflow will:
+#   1. Parse the URL from your comment (only yaseen-vm's comments are trusted)
+#   2. Verify yaseen-vm has write access to the target repo
+#   3. Run plan + fix on the target repo
+#   4. Create a PR there and report the result back here
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  cross-repo:
+    if: |
+      github.event.label.name == 'cross-repo-fix' &&
+      github.event.issue.state == 'open'
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Step 1: Find the target issue URL from an authorized comment ──────────
+      - name: Parse cross-repo reference
+        id: ref
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const AUTHORIZED = ['yaseen-vm'];
+            const PATTERN = /https:\/\/github\.com\/([^\/\s]+)\/([^\/\s]+)\/issues\/(\d+)/;
+            const issue = context.payload.issue;
+
+            // Collect body + all comments from authorized users
+            const sources = [];
+            if (AUTHORIZED.includes(issue.user.login)) {
+              sources.push(issue.body || '');
+            }
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              per_page: 100
+            });
+            for (const c of comments) {
+              if (AUTHORIZED.includes(c.user.login)) {
+                sources.push(c.body || '');
+              }
+            }
+
+            // Use the LAST matching reference found
+            let targetOwner, targetRepo, targetIssue;
+            for (const src of sources) {
+              const m = src.match(PATTERN);
+              if (m) { targetOwner = m[1]; targetRepo = m[2]; targetIssue = m[3]; }
+            }
+
+            if (!targetOwner) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: [
+                  '❌ **No external issue reference found.**',
+                  '',
+                  'Comment the target GitHub issue URL before adding the `cross-repo-fix` label. Example:',
+                  '',
+                  '```',
+                  'https://github.com/owner/repo/issues/42',
+                  '```',
+                  '',
+                  'Re-add `cross-repo-fix` after commenting the URL.'
+                ].join('\n')
+              });
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                name: 'cross-repo-fix'
+              }).catch(() => {});
+              core.setFailed('No cross-repo reference found');
+              return;
+            }
+
+            core.setOutput('target_owner', targetOwner);
+            core.setOutput('target_repo', targetRepo);
+            core.setOutput('target_issue', targetIssue);
+            core.setOutput('target_full', `${targetOwner}/${targetRepo}`);
+
+      # ── Step 2: Confirm yaseen-vm has write access to the target repo ─────────
+      - name: Check access to target repo
+        id: access
+        if: steps.ref.conclusion == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = '${{ steps.ref.outputs.target_owner }}';
+            const repo  = '${{ steps.ref.outputs.target_repo }}';
+            const issueNum = context.payload.issue.number;
+
+            let permission = 'none';
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner, repo, username: 'yaseen-vm'
+              });
+              permission = data.permission;
+            } catch (_) {
+              // 404 → not a collaborator or private repo with no token access
+              permission = 'none';
+            }
+
+            if (permission === 'none' || permission === 'read') {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNum,
+                body: [
+                  `❌ **Access denied** for \`${owner}/${repo}\``,
+                  '',
+                  `yaseen-vm has \`${permission}\` permission — write or admin is required.`,
+                  '',
+                  'Make sure the `CROSS_REPO_TOKEN` secret contains a PAT with write access to the target repo, then re-add `cross-repo-fix`.'
+                ].join('\n')
+              });
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNum,
+                name: 'cross-repo-fix'
+              }).catch(() => {});
+              core.setFailed(`Insufficient access to ${owner}/${repo} (${permission})`);
+              return;
+            }
+
+            core.setOutput('permission', permission);
+
+      # ── Step 3: Mark as in-progress ───────────────────────────────────────────
+      - name: Mark as in-progress
+        if: steps.access.conclusion == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNum = context.payload.issue.number;
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNum,
+              name: 'cross-repo-fix'
+            }).catch(() => {});
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNum,
+              labels: ['cross-repo-in-progress']
+            });
+
+      # ── Step 4: Check out the scanner and the target repo ─────────────────────
+      - name: Checkout scanner (this repo)
+        if: steps.access.conclusion == 'success'
+        uses: actions/checkout@v4
+        with:
+          path: scanner
+
+      - name: Checkout target repo
+        if: steps.access.conclusion == 'success'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.ref.outputs.target_full }}
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          path: target
+          fetch-depth: 0
+
+      - name: Configure git identity for target repo
+        if: steps.access.conclusion == 'success'
+        run: |
+          cd target
+          git config user.name "repo-scanner[bot]"
+          git config user.email "repo-scanner[bot]@users.noreply.github.com"
+
+      # ── Step 5: Install the scanner ───────────────────────────────────────────
+      - name: Set up Python
+        if: steps.access.conclusion == 'success'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install repo-scanner
+        if: steps.access.conclusion == 'success'
+        run: pip install openai PyGithub pyyaml click rich && pip install -e ./scanner
+
+      # ── Step 6: Plan ──────────────────────────────────────────────────────────
+      - name: Generate plan for target issue
+        if: steps.access.conclusion == 'success'
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+          MIMO_API_KEY: ${{ secrets.MIMO_API_KEY || secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://api.xiaomimimo.com/v1' }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL || 'mimo-v2.5-pro' }}
+          GITHUB_REPOSITORY: ${{ steps.ref.outputs.target_full }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}/target
+        working-directory: target
+        run: |
+          python -m repo_scanner.main plan \
+            --issue-number ${{ steps.ref.outputs.target_issue }}
+
+      # ── Step 7: Fix ───────────────────────────────────────────────────────────
+      - name: Apply fix for target issue
+        if: steps.plan.conclusion == 'success'
+        id: fix
+        env:
+          GITHUB_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+          MIMO_API_KEY: ${{ secrets.MIMO_API_KEY || secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://api.xiaomimimo.com/v1' }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL || 'mimo-v2.5-pro' }}
+          GITHUB_REPOSITORY: ${{ steps.ref.outputs.target_full }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}/target
+        working-directory: target
+        run: |
+          python -m repo_scanner.main fix \
+            --issue-number ${{ steps.ref.outputs.target_issue }} \
+            --from-plan
+
+      # ── Step 8: Report results back to this issue ─────────────────────────────
+      - name: Report results
+        if: always() && steps.access.conclusion == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNum   = context.payload.issue.number;
+            const targetFull = '${{ steps.ref.outputs.target_full }}';
+            const targetNum  = '${{ steps.ref.outputs.target_issue }}';
+            const prUrls     = '${{ steps.fix.outputs.pr_urls }}';
+            const planOk     = '${{ steps.plan.conclusion }}' === 'success';
+            const fixOk      = '${{ steps.fix.conclusion }}'  === 'success';
+            const runUrl     = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+            const targetLink = `[${targetFull}#${targetNum}](https://github.com/${targetFull}/issues/${targetNum})`;
+
+            // Remove in-progress label
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNum,
+              name: 'cross-repo-in-progress'
+            }).catch(() => {});
+
+            let body, resultLabel;
+            if (prUrls) {
+              body = [
+                `✅ **Cross-repo fix complete!**`,
+                '',
+                `PR raised on \`${targetFull}\`: ${prUrls}`,
+                '',
+                `> Target issue: ${targetLink}`
+              ].join('\n');
+              resultLabel = 'cross-repo-done';
+            } else if (!planOk) {
+              body = [
+                `⚠️ **Planning failed** for ${targetLink}`,
+                '',
+                `The AI could not generate a fix plan. [View run](${runUrl}) for details.`,
+                '',
+                'Re-add `cross-repo-fix` to retry.'
+              ].join('\n');
+              resultLabel = 'cross-repo-failed';
+            } else {
+              body = [
+                `⚠️ **Fix failed** for ${targetLink}`,
+                '',
+                `A plan was generated but the fix could not be applied. [View run](${runUrl}) for details.`,
+                '',
+                'Re-add `cross-repo-fix` to retry.'
+              ].join('\n');
+              resultLabel = 'cross-repo-failed';
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNum,
+              body
+            });
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNum,
+              labels: [resultLabel]
+            });

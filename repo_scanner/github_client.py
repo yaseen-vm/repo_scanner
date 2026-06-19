@@ -37,6 +37,22 @@ LABEL_DEFS = {
         "color": "b60205",
         "description": "Auto-fix PR was closed without merging",
     },
+    "cross-repo-fix": {
+        "color": "0075ca",
+        "description": "Trigger cross-repo autonomous fix on linked issue",
+    },
+    "cross-repo-in-progress": {
+        "color": "e4e669",
+        "description": "Cross-repo fix is running",
+    },
+    "cross-repo-done": {
+        "color": "0e8a16",
+        "description": "Cross-repo fix completed — PR raised on target repo",
+    },
+    "cross-repo-failed": {
+        "color": "b60205",
+        "description": "Cross-repo fix failed — re-add cross-repo-fix to retry",
+    },
 }
 
 
