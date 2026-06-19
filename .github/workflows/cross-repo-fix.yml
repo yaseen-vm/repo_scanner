@@ -92,27 +92,73 @@ jobs:
             core.setOutput('target_issue', targetIssue);
             core.setOutput('target_full', `${targetOwner}/${targetRepo}`);
 
-      # ── Step 2: Confirm yaseen-vm has write access to the target repo ─────────
-      - name: Check access to target repo
-        id: access
+      # ── Step 2: Confirm CROSS_REPO_TOKEN is set ──────────────────────────────
+      - name: Check CROSS_REPO_TOKEN is configured
+        id: token_check
         if: steps.ref.conclusion == 'success'
+        env:
+          HAS_TOKEN: ${{ secrets.CROSS_REPO_TOKEN != '' }}
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.CROSS_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const hasToken = process.env.HAS_TOKEN === 'true';
+            if (!hasToken) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: [
+                  '❌ **`CROSS_REPO_TOKEN` secret is not set.**',
+                  '',
+                  'This secret must be a GitHub Personal Access Token (PAT) with `repo` scope and write access to the target repository.',
+                  '',
+                  '**To fix:**',
+                  '1. Go to GitHub → Settings → Developer Settings → Personal Access Tokens → Classic',
+                  '2. Create a token with `repo` scope',
+                  '3. Add it to this repo: Settings → Secrets → Actions → New secret → name it `CROSS_REPO_TOKEN`',
+                  '',
+                  'Then re-add `cross-repo-fix` to retry.'
+                ].join('\n')
+              });
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                name: 'cross-repo-fix'
+              }).catch(() => {});
+              core.setFailed('CROSS_REPO_TOKEN secret is not configured');
+            }
+
+      # ── Step 3: Confirm yaseen-vm has write access to the target repo ─────────
+      - name: Check access to target repo
+        id: access
+        if: steps.token_check.conclusion == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CROSS_REPO_TOKEN }}
           script: |
             const owner = '${{ steps.ref.outputs.target_owner }}';
             const repo  = '${{ steps.ref.outputs.target_repo }}';
             const issueNum = context.payload.issue.number;
 
+            // First check if yaseen-vm owns the repo (handles private repos)
             let permission = 'none';
             try {
-              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
-                owner, repo, username: 'yaseen-vm'
-              });
-              permission = data.permission;
-            } catch (_) {
-              // 404 → not a collaborator or private repo with no token access
-              permission = 'none';
+              const { data: repoData } = await github.rest.repos.get({ owner, repo });
+              if (repoData.owner.login === 'yaseen-vm') {
+                // Owner always has admin
+                permission = 'admin';
+              }
+            } catch (_) {}
+
+            // If not the owner, check collaborator level
+            if (permission === 'none') {
+              try {
+                const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner, repo, username: 'yaseen-vm'
+                });
+                permission = data.permission;
+              } catch (_) {}
             }
 
             if (permission === 'none' || permission === 'read') {
@@ -125,7 +171,7 @@ jobs:
                   '',
                   `yaseen-vm has \`${permission}\` permission — write or admin is required.`,
                   '',
-                  'Make sure the `CROSS_REPO_TOKEN` secret contains a PAT with write access to the target repo, then re-add `cross-repo-fix`.'
+                  'Make sure the `CROSS_REPO_TOKEN` PAT has write access to the target repo, then re-add `cross-repo-fix`.'
                 ].join('\n')
               });
               await github.rest.issues.removeLabel({
@@ -140,7 +186,7 @@ jobs:
 
             core.setOutput('permission', permission);
 
-      # ── Step 3: Mark as in-progress ───────────────────────────────────────────
+      # ── Step 4: Mark as in-progress ───────────────────────────────────────────
       - name: Mark as in-progress
         if: steps.access.conclusion == 'success'
         uses: actions/github-script@v7
